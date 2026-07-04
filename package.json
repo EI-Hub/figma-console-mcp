@@ -1,5 +1,5 @@
 {
-	"name": "figma-console-mcp",
+	"name": "@ei/figma-console-mcp",
 	"version": "1.34.0",
 	"description": "The most comprehensive MCP server for Figma — design tokens, variables, components, write tools, version history diff, accessibility audits, FigJam, Slides, and more. Local (WebSocket Desktop Bridge plugin) and Cloudflare Workers (paired + remote) modes.",
 	"type": "module",
@@ -23,6 +23,7 @@
 		"build:apps": "cross-env APP_NAME=token-browser vite build && cross-env APP_NAME=design-system-dashboard vite build",
 		"dev:apps": "vite build --watch",
 		"build:local": "tsc -p tsconfig.local.json",
+		"ei-build-install": "npm run build:local && npm run build:apps && node scripts/ei-install.mjs",
 		"build:cloudflare": "tsc -p tsconfig.cloudflare.json",
 		"start": "wrangler dev",
 		"test": "jest",
