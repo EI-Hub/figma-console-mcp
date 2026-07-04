@@ -10,7 +10,11 @@ const packOutput = execSync("npm pack --ignore-scripts", { encoding: "utf8" });
 const tarball = packOutput.trim().split("\n").pop().trim();
 
 console.log(`\nInstalling ${tarball} globally...`);
-run(`npm install -g "${tarball}"`);
+// --prefer-offline: use cached package metadata without revalidating against
+// the registry — the corporate Nexus is VPN-only and npm hangs ~70s/package
+// on DNS retries when it's unreachable. Only genuinely missing packages hit
+// the network. Fail fast (not endless backoff) if one does and Nexus is down.
+run(`npm install -g --prefer-offline --fetch-retries=1 --fetch-timeout=30000 "${tarball}"`);
 rmSync(tarball);
 
 run("npm ls -g @ei/figma-console-mcp");
