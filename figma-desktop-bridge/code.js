@@ -151,21 +151,16 @@ var __stickyColors = {
   }
 })();
 
-// Restore persisted cloud pairing config (stored via STORE_CLOUD_CONFIG) and
-// push it to the UI so cloud users don't lose their pairing on plugin reopen.
-// Fire-and-forget: never blocks the FILE_INFO/VARIABLES_DATA pushes above.
+// SANITIZED: cloud relay support removed. Previously this restored a persisted
+// pairing code and the UI silently re-dialed the remote relay on every plugin
+// launch. Now we proactively DELETE any pairing code left over from earlier
+// versions so no stale credential remains in clientStorage.
 (function() {
-  figma.clientStorage.getAsync('cloudConfig')
-    .then(function(stored) {
-      // Skip if nothing stored or the shape is unusable (e.g., cleared config)
-      if (!stored || !stored.code) return;
-      figma.ui.postMessage({ type: 'CLOUD_CONFIG_RESTORED', config: stored });
-      console.log('🌉 [Desktop Bridge] Restored cloud config from clientStorage');
+  figma.clientStorage.deleteAsync('cloudConfig')
+    .then(function() {
+      console.log('🌉 [Desktop Bridge] Cleared any stored cloud pairing config (cloud mode removed)');
     })
-    .catch(function(error) {
-      // clientStorage can throw — non-critical, just log
-      console.warn('🌉 [Desktop Bridge] Could not restore cloud config:', error && error.message ? error.message : String(error));
-    });
+    .catch(function() { /* nothing stored — fine */ });
 })();
 
 // Helper function to serialize a variable for response
@@ -3584,11 +3579,10 @@ figma.ui.onmessage = async (msg) => {
   }
 
   // ============================================================================
-  // STORE_CLOUD_CONFIG - Persist cloud pairing config in clientStorage
+  // STORE_CLOUD_CONFIG - SANITIZED: cloud mode removed; never persist pairing codes
   // ============================================================================
   else if (msg.type === 'STORE_CLOUD_CONFIG') {
-    figma.clientStorage.setAsync('cloudConfig', { code: msg.code, timestamp: Date.now() })
-      .catch(function() { /* non-critical */ });
+    // Intentionally a no-op.
   }
 
   // ============================================================================

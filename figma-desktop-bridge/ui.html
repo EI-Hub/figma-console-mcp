@@ -470,7 +470,8 @@
       </div>
       <!-- CTA starts hidden; the first state reconcile shows it with an honest label -->
       <button class="cta-btn" id="cta-btn" onclick="toggleLocalConnection()" style="display:none">Pause</button>
-      <button class="icon-btn" id="cloud-icon" onclick="toggleCloudPair()" title="Cloud pairing" aria-label="Cloud pairing" aria-expanded="false">
+      <!-- SANITIZED: cloud pairing UI hidden — cloud relay support removed -->
+      <button class="icon-btn" id="cloud-icon" onclick="toggleCloudPair()" title="Cloud pairing" aria-label="Cloud pairing" aria-expanded="false" style="display:none">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
           <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>
         </svg>
@@ -1698,7 +1699,9 @@
     // CLOUD MODE — Connect to remote relay via pairing code
     // ============================================================================
     var cloudWs = null;
-    var CLOUD_RELAY_HOST = 'wss://figma-console-mcp.southleft.com';
+    // SANITIZED: cloud relay removed. Empty host disables all cloud dialing —
+    // cloudDial() refuses to run when CLOUD_RELAY_HOST is falsy.
+    var CLOUD_RELAY_HOST = '';
     var _lastCloudCode = null;              // most recent code that successfully paired
     var _cloudUserDisconnected = false;     // user clicked Disconnect — suppress auto re-dial
     var _cloudWasConnectedBeforePause = false; // restore cloud on Resume after Pause
@@ -2259,6 +2262,16 @@
       var btn = document.getElementById('cloud-btn');
       var statusEl = document.getElementById('cloud-status');
 
+      // SANITIZED: cloud mode disabled — never dial a remote relay.
+      if (!CLOUD_RELAY_HOST) {
+        if (statusEl) {
+          statusEl.textContent = 'Cloud mode is disabled in this sanitized build.';
+          statusEl.className = 'cloud-status error';
+        }
+        if (btn) btn.disabled = false;
+        return;
+      }
+
       // Close existing cloud connection if any (manual reason suppresses
       // the pool's same-port retry for the old socket).
       if (cloudWs && cloudWs.readyState <= 1) {
@@ -2649,19 +2662,10 @@
           handleResult('GET_FILE_INFO', 'fileInfo');
           break;
 
-        // Cloud config restored from clientStorage by code.js — auto-fill the
-        // pairing input and reconnect without making the user re-pair.
+        // SANITIZED: previously this auto-dialed the remote cloud relay with a
+        // pairing code restored from clientStorage — a silent outbound
+        // connection on every plugin launch. Cloud mode is removed; ignore.
         case 'CLOUD_CONFIG_RESTORED':
-          if (msg.config && msg.config.code && !_cloudUserDisconnected) {
-            var restoredCode = String(msg.config.code).trim().toUpperCase();
-            var restoredInput = document.getElementById('cloud-code');
-            if (restoredInput) restoredInput.value = restoredCode;
-            if (restoredCode.length >= 4 && !hasLiveCloudConnection()) {
-              _lastCloudCode = restoredCode;
-              _cloudRetryCount = 0;
-              cloudDial(restoredCode, true);
-            }
-          }
           break;
 
         // Plugin UI reload

@@ -211,9 +211,7 @@ When creating or updating **multiple variables**, ALWAYS prefer batch tools over
 Batch tools are 10-50x faster because they execute in a single roundtrip. Use individual tools only for one-off operations.
 
 ### DESIGN BEST PRACTICES
-For component-specific design guidance (sizing, proportions, accessibility, etc.), query the Design Systems Assistant MCP which provides up-to-date best practices for any component type.
-
-If Design Systems Assistant MCP is not available, install it from: https://github.com/southleft/design-systems-mcp`,
+For component-specific design guidance (sizing, proportions, accessibility, etc.), consult your design system documentation.`,
 			},
 		);
 
