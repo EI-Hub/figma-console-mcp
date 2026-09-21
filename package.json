@@ -23,7 +23,7 @@
 		"build:apps": "cross-env APP_NAME=token-browser vite build && cross-env APP_NAME=design-system-dashboard vite build",
 		"dev:apps": "vite build --watch",
 		"build:local": "tsc -p tsconfig.local.json",
-		"ei-build-install": "npm run build:local && npm run build:apps && node scripts/ei-install.mjs",
+		"ei-build-install": "npm run build:local && npm run build:apps && node my-scripts/ei-install.mjs",
 		"build:cloudflare": "tsc -p tsconfig.cloudflare.json",
 		"start": "wrangler dev",
 		"test": "jest",
