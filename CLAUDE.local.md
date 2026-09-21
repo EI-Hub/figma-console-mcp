@@ -1,6 +1,6 @@
-# Consignes locales (poste de Binh, non versionnées)
+# Consignes locales
 
-> Ce fichier complète le `CLAUDE.md` du dépôt. Il n'est pas commité, comme le dossier `.claude/`.
+> Ce fichier complète le `CLAUDE.md` du dépôt.
 
 ## Registre des observations
 
@@ -45,3 +45,16 @@ installation globale du tarball `@ei/figma-console-mcp`. Jamais d'installation m
 - Déployer uniquement depuis la branche `sanitized`, après la vérification ci-dessus et avec les tests au vert.
 - La config MCP pointe sur la commande globale `figma-console-mcp` (ou sur le `dist/local.js` du build local),
   jamais sur un endpoint hébergé.
+
+## Tags et versions
+
+Les tags de ce fork se nomment **`ei/<version amont>`** (ex. `ei/v1.34.0`), jamais `vX.Y.Z` nu : le même nom existe
+en amont et pointe sur un autre commit (le `v1.34.0` amont vise ici la release v1.33.2). Toujours des tags annotés
+(`git tag -a`), créés sur `main` avec un arbre propre, et poussés **un par un** (`git push origin ei/v1.34.0`) —
+`git push` seul ne pousse que les branches.
+
+Jamais `--tags`, ni en fetch ni en push : un tag amont se récupère nommément dans son propre namespace
+(`git fetch upstream refs/tags/v1.40.4:refs/tags/upstream/v1.40.4`).
+
+Procédure complète, interdits et historique des tags : `my-docs/procedure-tags.md` — le tableau d'historique se
+complète à chaque nouveau tag.
