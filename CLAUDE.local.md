@@ -54,7 +54,25 @@ en amont et pointe sur un autre commit (le `v1.34.0` amont vise ici la release v
 `git push` seul ne pousse que les branches.
 
 Jamais `--tags`, ni en fetch ni en push : un tag amont se récupère nommément dans son propre namespace
-(`git fetch upstream refs/tags/v1.40.4:refs/tags/upstream/v1.40.4`).
+(`git fetch --no-tags upstream refs/tags/v1.40.4:refs/tags/upstream/v1.40.4`).
 
 Procédure complète, interdits et historique des tags : `my-docs/procedure-tags.md` — le tableau d'historique se
 complète à chaque nouveau tag.
+
+## Montée de version amont
+
+Toute release de `southleft/figma-console-mcp` s'intègre par **fusion sur une branche `upgrade/vX.Y.Z`**, jamais
+par rebase, et jamais directement sur `main`. Le tag amont se récupère avec `--no-tags` dans le namespace
+`upstream/` (cf. la section précédente).
+
+Règle qui prime sur tout le reste : **résoudre les conflits ne sanitise rien.** Un conflit n'apparaît que là où les
+deux côtés ont touché les mêmes lignes ; tout le code amont nouveau fusionne en silence, y compris un éventuel
+nouveau `fetch`, domaine d'allowlist, hook d'install ou prompt d'outil. L'audit de la section « Sanitisation
+obligatoire » porte donc sur **l'arbre fusionné entier**, après la fusion, et se termine par la preuve par le
+diff : `git diff upstream/vX.Y.Z..HEAD --stat` ne doit lister que nos fichiers connus.
+
+Ensuite seulement : build, tests, `npm run ei-build-install`, vérification de l'artefact **installé** (et non du
+checkout), rechargement du plugin dans Figma Desktop, mise à jour du SANITIZED-PLAN, fusion dans `main` et tag.
+
+Procédure détaillée, commandes d'audit, pièges rencontrés et historique des montées :
+`my-docs/procedure-migration.md` — compléter son tableau à chaque montée.

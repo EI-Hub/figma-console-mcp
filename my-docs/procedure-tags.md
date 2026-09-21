@@ -44,9 +44,11 @@ GitHub.
 ## Interdits
 
 - **`git fetch upstream --tags`** (ou `git fetch --tags`) — ramène les tags amont dans le même espace de noms et
-  entre en collision avec l'historique local. Toujours cibler un tag précis, dans le namespace `upstream/` :
+  entre en collision avec l'historique local. Toujours cibler un tag précis, dans le namespace `upstream/`, **et
+  toujours avec `--no-tags`** : sans lui, git suit automatiquement les tags pointant dans l'historique récupéré
+  (*tag auto-following*) et les ramène quand même — constaté le 2026-09-21, 24 tags amont importés :
   ```bash
-  git fetch upstream refs/tags/v1.40.4:refs/tags/upstream/v1.40.4
+  git fetch --no-tags upstream refs/tags/v1.40.4:refs/tags/upstream/v1.40.4
   ```
 - **`git push --tags`** — pousserait les ~68 tags hérités et tout tag de travail local. Toujours pousser par nom.
 - **Tag non annoté** (`git tag <nom>` sans `-a`) — perd auteur, date et message.
