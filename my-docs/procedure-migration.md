@@ -115,6 +115,28 @@ Vérifier que c'est bien le plugin sanitisé **qui est installé**, pas seulemen
 node -e "const fs=require('fs'),p=require('path');const b='C:/Program Files/nodejs/node_modules/@ei/figma-console-mcp';const n=JSON.parse(fs.readFileSync(p.join(b,'figma-desktop-bridge','manifest.json'),'utf8')).networkAccess||{};console.log([...(n.allowedDomains||[]),...(n.devAllowedDomains||[])].filter(d=>!d.includes('localhost')) .length?'ALERTE':'NONE')"
 ```
 
+Le paquet installé ne doit contenir **ni le worker Cloudflare ni les modules de relay** :
+
+```bash
+B="C:/Program Files/nodejs/node_modules/@ei/figma-console-mcp"
+ls "$B/dist"                                                      # pas de cloudflare/
+find "$B" -name "cloud-websocket-*" -not -path "*/node_modules/*"  # doit être vide
+```
+
+> **Piège vécu (2026-09-21)** : `package.json` embarque `files: ["dist", ...]`, donc **tout** le dossier `dist/`.
+> Rien ne le nettoyait : la sortie périmée d'un ancien `npm run build` complet (`dist/cloudflare/`, soit le worker
+> **et les deux modules `cloud-websocket-*`**) repartait dans le tarball. Code mort — le `bin` est `dist/local.js`
+> et rien n'importe `cloudflare/` — mais un paquet local-only n'a pas à embarquer le relay qu'on a retiré du
+> plugin. `my-scripts/ei-install.mjs` fait désormais `rmSync("dist")` avant de builder, et porte tout le déploiement
+> (clean → build → pack → install) pour que le nettoyage ne puisse pas être contourné. Effet : 496 → 410 fichiers.
+
+Enfin, le serveur recopie le plugin dans un **répertoire stable** au démarrage — c'est de là que Figma le charge.
+Vérifier cette copie-là aussi, pas seulement celle du paquet :
+
+```bash
+node -e "const fs=require('fs');const b=require('os').homedir()+'/.figma-console-mcp/plugin/';const n=JSON.parse(fs.readFileSync(b+'manifest.json','utf8')).networkAccess||{};const all=[...(n.allowedDomains||[]),...(n.devAllowedDomains||[])];console.log('non-localhost:',all.filter(d=>!d.includes('localhost')).length)"
+```
+
 **Puis recharger le plugin dans Figma Desktop** (Plugins → Development → ré-importer `manifest.json`) : un plugin
 déjà chargé garde son ancienne allowlist.
 

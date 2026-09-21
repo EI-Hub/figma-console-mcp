@@ -1,10 +1,22 @@
-// Packs the sanitized build into a tarball and installs it globally.
-// A tarball install (vs `npm i -g .`) gives a real copy decoupled from this
-// checkout — folder installs symlink to the working tree.
+// Builds the sanitized package from a clean dist/ and installs it globally.
+// Owns the whole deploy (clean -> build -> pack -> install) so the cleanup
+// cannot be skipped by invoking the builds separately.
 import { execSync } from "node:child_process";
 import { rmSync } from "node:fs";
 
 const run = (cmd, opts = {}) => execSync(cmd, { stdio: "inherit", ...opts });
+
+// Wipe dist/ before building. package.json ships `files: ["dist", ...]`, i.e.
+// the whole folder, and nothing else cleans it — so stale output from an
+// earlier full `npm run build` gets packed too. That included dist/cloudflare/
+// with the worker and BOTH cloud-websocket relay modules: dead code (bin is
+// dist/local.js and nothing imports cloudflare/), but a local-only package has
+// no business shipping the relay we removed from the plugin.
+console.log("Cleaning dist/ ...");
+rmSync("dist", { recursive: true, force: true });
+
+run("npm run build:local");
+run("npm run build:apps");
 
 const packOutput = execSync("npm pack --ignore-scripts", { encoding: "utf8" });
 const tarball = packOutput.trim().split("\n").pop().trim();
