@@ -74,7 +74,7 @@ export interface ComponentVariant {
 
 export interface ComponentProperty {
 	name: string;
-	type: 'TEXT' | 'BOOLEAN' | 'INSTANCE_SWAP' | 'VARIANT';
+	type: 'TEXT' | 'BOOLEAN' | 'INSTANCE_SWAP' | 'VARIANT' | 'SLOT';
 	defaultValue?: string | boolean;
 	options?: string[];  // For INSTANCE_SWAP, available component keys
 }
@@ -289,6 +289,27 @@ export interface ComponentSearchResult {
 	category?: string;
 	variantCount?: number;
 	defaultSize?: { width: number; height: number };
+}
+
+/**
+ * Decide whether a component search can be answered from this manifest.
+ *
+ * When the components fetch failed (`loadWarning` set) and the manifest holds
+ * no components at all, there is nothing to search — and an empty result list
+ * would read as "no such component exists". Returns the error message to
+ * surface in that case, or null when the search can proceed (including a
+ * genuinely empty file, which loads WITHOUT a warning).
+ */
+export function componentSearchLoadFailure(
+	manifest: DesignSystemManifest,
+	loadWarning: string | undefined,
+): string | null {
+	if (!loadWarning) return null;
+	const loaded =
+		Object.keys(manifest.components).length +
+		Object.keys(manifest.componentSets).length;
+	if (loaded > 0) return null;
+	return `Component search could not run: ${loadWarning}`;
 }
 
 /**

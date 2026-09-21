@@ -5,6 +5,305 @@ All notable changes to Figma Console MCP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.40.4] - 2026-09-21
+
+Found by live-testing v1.40.3 against hard production components (a 2-variant side navigation with 62 hidden layers, gradients, shadows and an 8-level tree) rather than tidy examples. Server-only: **no plugin re-import needed**.
+
+### Fixed
+
+- **Bridge reads went to the ACTIVE file, not the file named in `fileUrl`.** `figma_generate_component_doc` fetched variable names, the description and annotations from whichever file was active in Figma. Documenting a component in file A while file B was active printed `—` for every color token and raw `VariableID:118:874` for spacing — and because node and variable ids are only unique *within* a file, an id collision would silently return file B's names, description or annotations instead. The same flaw affected **`figma_get_component`** (which asks the plugin *before* REST, so it could return a different component that happened to share the node id) and **`figma_get_component_for_development`** (description and annotations). All now target the file in the URL; if that file isn't connected to the bridge they fall back to REST / hex values rather than to another file's data. Same root cause as the v1.40.2 export fix.
+- **A tool result over 16 MB disconnected the server for the rest of the session.** Claude Code closes the transport when one JSON-RPC message passes 16 MB (`wrote >16MB to stdout without a JSON-RPC message boundary`); the user saw only "Connection closed" and lost every tool. Reproduced twice with `figma_execute` returning large node JSON. Every tool result is now size-checked centrally (8 MB): an oversized result is replaced by an error that says how big it was, that any Figma changes still happened, and how to ask for less.
+- **Anatomy mislabeled every vertical auto-layout.** `primaryAxisSizingMode` was hard-wired to "width" and the counter axis to "height", which is only true for horizontal layouts — a fixed-width sidebar printed as `[fixed-height]`. Labels now follow the layout's real axes.
+- **v1.40.3's "show every icon" produced an unreadable cell** on a component with 23 icons. Repeats are now grouped and counted (`CaretDown ×3 _(2 hidden)_`), capped at five kinds. Icons are also named by the glyph actually in the slot: many systems wrap it (`Icon (small)` holding a swappable `MagnifyingGlass`), and the wrapper's name says nothing about which icon it is.
+- **v1.40.3's typography table listed one element several times with conflicting scopes** (`text-8 … all variants` *and* `… open=true`). Rows were identified by position in the tree, so ten nav items' badges became ten elements. A row is now identified by (element name, style) and appears once, with one scope.
+- **Anatomy repeated identical siblings in full** — ten near-identical nav items ran to ~150 lines. Runs of siblings that print identically collapse to one entry marked `×N`; a sibling that differs in anything the tree shows stays separate.
+- Shadow offsets/blur from scaled instances printed as `y 0.39000001549720764` (now rounded, hex uppercased), and an empty `## Overview` heading was left behind when a component has no description.
+
+## [1.40.3] - 2026-09-21
+
+Fidelity fixes for `figma_generate_component_doc` on harder components — tabs, scrollable containers, anything with hidden layers, one-sided borders, or variants that differ structurally. Server-only: **no plugin re-import needed**. Reported by Robin Di Capua, who checks every generated claim against the file; several further instances of the same defect classes were found by sweeping the tool for them.
+
+### Fixed
+
+- **Hidden layers were documented as if they render.** The walk checked whether a *paint* was visible but never whether the *layer* was, so a hidden `Focus Ring` sharing the selected underline's color printed as a second, identical `Stroke` row. Hidden layers (including anything under a hidden parent) are still collected — a hidden focus ring is real design intent — but are now labeled `_(hidden layer)_`, never chosen as a variant's primary color in the Variant Matrix, and shown in the anatomy tree marked `(hidden)`. Stroke and text rows now go through the same de-duplication as fills, and stroke rows name their layer.
+- **Border width ignored `individualStrokeWeights`.** With a one-sided border (underlines, dividers, accent bars) the scalar `strokeWeight` is a leftover from before the per-side override and appears nowhere in the rendered component — the doc reported it anyway, e.g. `2px` for a tab whose underline is `4px`. Per-side weights now win (`4px bottom`), and border width is only reported where a stroke is actually painted (the REST API puts `strokeWeight: 1` on every node).
+- **Typography was read from the first variant only.** A tab that is SemiBold when selected and Regular otherwise was documented as always SemiBold. Typography is now compared across every variant, with an *Applies to* column (`Is Selected=True`) when styles differ; a label hidden in some variants is reported as such; a text layer that mixes styles is flagged rather than presented as uniformly its base style.
+- **Anatomy showed one variant's layer tree.** Variants that differ structurally (a scrollable variant that wraps its list in scroller frames and adds a fade) lost everything unique to them. The doc now emits one tree per *distinct* structure, headed by the property that decides it.
+- **Trees were silently cut off.** The component was fetched at REST `depth: 4`, counted from the set — leaving each variant three levels, enough to drop nested labels and an entire scroll mechanism. The fetch is now 8 levels (falling back to 4, with a timeout, if a very large set makes the deep fetch fail), the walkers match it, and because REST returns a cut-off container as `children: []` — indistinguishable from an empty frame — the doc says so when layers sit at the limit instead of presenting an incomplete document as complete.
+- **Gradient, image and other non-solid fills were dropped without a trace**, as were **shadows, blurs and layer opacity**. They are now reported (`linear gradient (2 stops: #FFFFFF00 → #FFFFFF)`, `drop shadow: x 0 · y 2 · blur 4 …`, `opacity 40%` with its bound token). Silence read as "there is nothing there".
+- **A single boolean-valued variant property lost its name.** `Is scrollable=False` rendered as a variant called "False". Boolean-like values now keep their property (`Is scrollable=False`, `Hover / Is Selected=True`); ordinary values are unchanged (`Secondary / Critical`).
+- **Sets with only `VARIANT` properties got no Configurable Properties table** — the guard omitted `variants` even though the table renders them — and **`SLOT` properties were never listed at all**, which for a compositional component is the whole API.
+- **Only the first icon in a variant was shown.** A chip with leading and trailing icons lost the second from both the Variant Matrix and Icon Mapping.
+- **Design-Code Parity compared a property *name* as if it were a variant.** With no property literally named `Variant`, a `Size × State` set produced `| Size | Yes | **No** | Figma-only — needs code variant |`. Parity now compares each Figma property with the code prop of the same name, value by value, and makes no claim about properties that have no counterpart.
+- **Zero padding was omitted rather than shown as `0`** on auto-layout components, so a reader couldn't tell zero from unreported.
+- **Frontmatter asserted `status: stable` and `version: 1.0.0` for every component, and empty descriptions became `The <name> component.`** These read as extracted facts. Each is now emitted only when actually known.
+- **Identically named variables in different collections were ambiguous** (`Primitive/2x` in both Spacing and Radius). Those — and only those — are now qualified with their collection; every other token keeps the name already mapped to code.
+
+### Changed
+
+- **Generated markdown will differ** for existing components: hidden layers appear (marked) in color tables and anatomy, stroke rows read `Stroke (<layer>)`, border-width rows disappear for unstroked components, typography tables may gain an *Applies to* column, effects/opacity rows appear, and unknown frontmatter keys are omitted. If you diff or snapshot generated docs, expect a one-time change.
+
+## [1.40.2] - 2026-09-18
+
+Data-loss fix for `figma_export_tokens`. **If you export into token files you care about, upgrade.** Server-only: no plugin re-import needed.
+
+### Fixed
+
+- **`figma_export_tokens` could silently replace a real token file with an empty one and report `success: true`.** The Desktop Bridge reads variables from whichever file is *active* in Figma Desktop. With a different file/tab focused than the one owning the requested `collectionIds`, the pull matched nothing — and the tool still overwrote the target, leaving only a metadata stamp, with `collections: []` and `warnings: []` in a success response. It now refuses, writes nothing, and says why: every requested collection must exist in the file that was read (all-or-nothing — a partial match is refused too), the error names that Figma file and lists the collections it *does* contain, and an export containing zero tokens is never written to disk. This affected directory targets and config-driven exports as well, so it predates 1.40.1; 1.40.1's new ability to write straight into an existing file made it easier to hit. Reported by Isabella Minzly.
+- **The same wrong-file overwrite, for every non-DTCG format.** With no `collectionIds` and a wrong-but-non-empty file focused, the export would replace `tokens.css` (or SCSS, Tailwind, TS…) with another file's variables and report success — plausible-looking output rather than an empty file, so harder to notice, and reachable through the tool's own default scaffold. Generated text files now record the Figma file they came from (a `Source: Figma file <key>` line under the existing `Generated by figma-console-mcp` header; DTCG records `figmaFileKey` in its root `$extensions`), and the default strategy refuses to overwrite a file generated from a different Figma file. Multi-format runs are all-or-nothing — one refused file means none are written. Limits, stated plainly: protection begins once a file has been exported by this version (older files carry no record); and the plain-JSON formats (`json-flat`, `json-nested`, `style-dictionary-v3`, `tokens-studio`) cannot carry a record when exported alone. Pinning `figmaFile` in `tokens.config.json` remains the hard guarantee. Found in code review of this fix.
+- **Guards that fail closed.** Anything that stops the tool from *proving* an overwrite is safe now stops the overwrite: an existing DTCG target that isn't valid JSON (unresolved merge conflict, truncated write), an existing target that can't be read, a target that records its source file when the plugin can't report which file it read, and an export of a different *kind* aimed at a DTCG file (`css-vars` into `typography.tokens.json` — previously a warning, and a way to lose every token in the file since 1.40.1). A UTF-8 BOM on the existing file no longer disables the checks. `strategy: "replace"` overrides all of these.
+- **`strategy: "merge"` was documented as preserving code-only tokens, but export never merged anything.** The tool description, the `strategy` parameter, and the docs all said the default mode "diffs against current contents… preserving code-only additions". On the export side `strategy` was only ever read for `dry-run`: `merge` and `replace` were the same blind overwrite, so a hand-added token was destroyed even by a perfectly correct export. The default mode is now genuinely safe: before overwriting an existing DTCG file it checks what would disappear, and refuses — leaving the file untouched — if that includes tokens the export doesn't manage (tokens with no Figma variable stamp, i.e. added by hand; or tokens stamped with a collection that isn't part of this export, e.g. a scoped export aimed at a shared file, or data read from the wrong Figma file). Variables deleted in Figma are still removed as normal. `strategy: "replace"` overwrites unconditionally, as its name says. The descriptions now state plainly that export *replaces* file contents; token-level merging is not implemented.
+
+### Changed
+
+- **Every `figma_export_tokens` response now includes `source: { fileName, fileKey }`** — the Figma file the variables were actually read from — so a caller can verify it before trusting the output. Pinning `figmaFile` in `tokens.config.json` continues to route the read to that specific file and fail if it isn't connected.
+- **Generated text outputs gain one header line** (`Source: Figma file <key>`). Expect a one-time, one-line diff in committed CSS/SCSS/TS/Tailwind token files on the next export.
+- **Behavior note for unattended pipelines:** an export that previously "succeeded" while dropping unmanaged tokens now fails with an explanatory error. That is the point of the fix, but if you relied on overwrite semantics, pass `strategy: "replace"`.
+
+## [1.40.1] - 2026-09-18
+
+Accuracy fixes for `figma_generate_component_doc` across variants, and file-path support for `figma_export_tokens`. Server-only: **no plugin re-import needed** (nothing in `figma-desktop-bridge/` changed).
+
+### Fixed
+
+- **`figma_generate_component_doc` — a descendant's fill could be documented as the variant's Background.** Every non-text solid fill in a variant's subtree landed in one flat list, and the Variant Matrix took the first entry as the background — so depth-first order decided what "Background" meant. On outline/ghost variants with a transparent container, that was the icon's vector: the doc described e.g. `Label/Critical` text on a `Label/Critical` background, a combination that doesn't exist. Background now comes only from the variant root's own fills (or a full-bleed background *layer* directly under a transparent root, labeled with its layer name); a variant with no background says so (`—` in the matrix, `none (transparent)` in Color Tokens). Inner fills are reported as `Fill (<layer>)`, icon artwork as `Icon (<layer>)`, and duplicate rows from multi-path icons are collapsed. Reported by Robin Di Capua.
+- **`figma_generate_component_doc` — Color Tokens variant headings kept only the first variant property**, and only if it was literally named `Variant`. A 2×5 `Variant × Appearance` set produced ten blocks headed by just "Primary"/"Secondary"; a `Size × State` set fell through to the raw `Size=lg, State=hover`. Headings now use the same naming as the Variant Matrix (`Secondary / Critical`), for any number of properties under any names. Reported by Robin Di Capua.
+- **`figma_generate_component_doc` — Spacing Tokens silently reported only the first variant.** Spacing is now compared across every variant of a component set: a shared value prints as before; variation explained by one variant property prints as `varies by **Size**: sm 8px · lg 16px`; unexplained variation lists each value and names the outliers. Zero-valued fields the REST API omits are compared as `0`, not skipped. A new **Spacing Inconsistencies** list flags any property bound to a variable on some variants and hardcoded on others *when no variant property accounts for the split* — a reliable fingerprint of an accidental edit. (A `Dot` shape that simply has no padding is a design decision, shown in the table but not flagged.) When a single variant is documented, the table says which one. Reported by Robin Di Capua.
+- **`figma_generate_component_doc` — icons were only detected when the layer name contained "icon".** A slot named e.g. "Leading Modifier" never matched, so the Icon column and Icon Mapping table were absent entirely. Icons are now detected from the layer name, the **main component** name, or an icon-sized instance driven by an `INSTANCE_SWAP` property, and the reported value is the main component actually in the slot (`features / ticket-checkmark`; variants as `Set (Value)`) rather than the layer name. Swap-driven icons are marked as a swappable default, nested instances inside an icon are no longer double-counted, and `INSTANCE_SWAP` properties now appear under Configurable Properties with their default component. Resolved from component metadata already in the REST response — no extra requests. Reported by Robin Di Capua.
+- **`figma_search_components` — a failed component load was reported as a successful search with zero results.** When the local components fetch failed (e.g. the load timing out on a very large file), the tool returned `success: true, results: []` with only a warning attached — which an agent reads as "no such component exists". It now returns an error stating that the search never ran, with next steps. A genuinely empty file, and any search where components did load, behave as before. (The underlying slow load on very large files is tracked separately — it needs a plugin change.)
+- **`figma_export_tokens` — `outputPath` pointing at a file failed with a raw `EEXIST: mkdir`, or silently became a directory.** `outputPath` was unconditionally treated as a directory, so re-exporting into an existing `typography.tokens.json` died in `mkdir`, and a fresh `foo.tokens.json` became a *directory* containing `tokens.tokens.json`. An existing file, or a path ending in a token-file extension, is now a file target: a single-file export is written at exactly that path. Combining a file target with a multi-file export is rejected with an actionable message before anything is written; directories, extension-less paths, and paths ending in `/` behave exactly as before. Dry-runs report `wouldWriteTo`; a mismatched extension (CSS into `.json`) warns; `scope: "collection"` without `collectionIds` now warns instead of silently exporting everything. Reported by Isabella Minzly.
+
+## [1.40.0] - 2026-08-16
+
+Design System Extraction — turn a production codebase into a design system. Server-only: **no plugin re-import needed** (nothing in `figma-desktop-bridge/` changed).
+
+Seven new `figma_ds_*` tools plus a supporting extraction engine (`src/core/extraction/`). The workflow runs in order: analyze the app(s) → extract tokens → scaffold the package → wire Storybook → port components one at a time → verify with deterministic evals — and, for design-led orgs, import the extracted tokens into Figma variables with `figma_import_tokens` (top-level groups become collections), a full code → design system → Figma round-trip. **Local Mode only**: these tools read a production codebase and write a design-system package on the local filesystem, which Cloudflare Workers cannot do — so they are registered only in `src/local.ts` and never appear in Cloud Mode's tool list (the `registerMultiFileTools` precedent: no silent no-op is possible).
+
+### Added
+
+- **`figma_ds_analyze` — scan one or more production app codebases.** Detects framework (React/Next/Angular/Web Components), styling methods (Tailwind v3/v4, CSS Modules, SCSS, Emotion, styled-components), and vendor component layers (shadcn/ui, Radix, MUI, Chakra, etc.), then builds a component inventory with per-component classification (vendored / wrapped / pure-vendor / bespoke), prop contracts, real usage counts (porting rank), observed prop values from call sites (variant inference), and duplicate detection. Iconography and typography rules are captured for the scaffold's showcase pages. Multiple targets merge into one inventory with cross-app duplicates flagged — the shared design language of a product family.
+  - **Architecture classification — the "UI kit vs design system" analysis.** An app ships `FollowButton`, `ModerationMenu`, `NodeCard` — components named after *usage*. A design system ships `Button`, `Menu`, `Card`, with usage expressed as variants and recipes. The analyzer assigns each component an atomic level, detects specializations (`FollowButton` → `Button`), and derives `missingPrimitives`: the canonical generic components the specializations imply but that don't exist in the codebase — which is the design-system build list, reviewed with the user rather than decided silently.
+  - Writes the full manifest to `<outDir>/.extraction/analysis.json` and returns a compressed summary, so a large inventory doesn't blow the context window.
+- **`figma_ds_extract_tokens` — mine the app's de-facto styling into DTCG tokens.** Two confidence tiers. **Declared** styling intent is mined first and always becomes tokens: `:root`/`@theme` custom properties with multi-mode detection across theming conventions (`.dark`, `[data-theme=…]`, `[data-mode=…]`, theme classes, `prefers-color-scheme` — light + dark blocks become token modes), SCSS variables, `tailwind.config` theme values, and shadcn HSL triples. **Inferred** values come second: recurring raw values (hex colors, spacing/radius/font sizes) are promoted only above a frequency threshold (`minFrequency`, default 4), and everything below the threshold is listed in the report for human review instead of silently dropped. Tailwind utility classes used in markup are frequency-mined and valued from the app's **own installed theme** (`node_modules/tailwindcss/theme.css`), so mined values are version-accurate rather than guessed from a hardcoded palette.
+  - Every token carries provenance — source `file:line`, confidence tier, frequency — in `$extensions`, so a reviewer can trace any token back to the code that justified it.
+  - Output goes through the same formatter engine as `figma_export_tokens` (canonical DTCG always; CSS vars / Tailwind v4 / Tailwind v3 / SCSS / TS / JSON / Style Dictionary / Tokens Studio on request; both DTCG dialects). The DTCG file is **directly importable into Figma variables via `figma_import_tokens`**.
+  - Names stay structural as mined (`--color-blue-500` → `color/blue/500`). Semantic naming (`color/primary`) is deliberately a review pass with the user, layered on top as aliases — a judgment call, not something to guess.
+- **`figma_ds_scaffold` — generate the design-system package.** `package.json` with the app framework as peer deps, `src/components` layout, token files via the shared formatter engine, framework-neutral token/typography/iconography showcase MDX docs pages, and a README documenting the workflow. Additive by default — existing files are skipped unless `force` (token files always refresh). Storybook itself is deliberately *not* baked in: run `npm create storybook@latest` inside the package afterwards — the CLI detects the framework and installs the current version, so the scaffold never ships version-pinned Storybook templates that rot.
+- **`figma_ds_setup_storybook` — wire the fresh workshop to the extraction.** A stock `npm create storybook@latest` workshop knows nothing about the source app, and every piece of glue this tool generates corresponds to a real render-fidelity failure hit during live extraction runs: `.storybook/preview.css` (Tailwind entry importing the extracted tokens plus the **source app's** `@theme` utility mapping, custom `@utility` definitions, `@layer base`, and `@font-face` rules mined from its stylesheets, with a dark variant covering both `.dark` and `[data-theme]` conventions), self-hosted font files copied into `staticDirs` with runtime-var fallbacks, a `main.js` patch (Tailwind vite plugin + automatic JSX runtime — without it, stories die with `React is not defined`), and a `preview.jsx` patch (preview.css import + a theme toolbar/decorator that sets both mode conventions, using the extracted mode names). Idempotent; anything it can't patch safely is returned as a manual step.
+- **`figma_ds_extract_component` — per-component deep manifest for porting.** Source (capped at 64KB), local import closure, prop contract, observed call-site variants, vendor classification, style touchpoints (classNames, CSS-module imports, custom properties consumed — check these against `tokens.json`), and a ready-to-adapt CSF3 story scaffold with one story per real observed variant. Pure-vendor components return guidance instead of source: represent them via the token theme and document approved usage, or wrap them in the design system if the org needs a customized version.
+- **`figma_ds_verify` — deterministic fidelity evals.** The governance gate before handing the package over or pushing tokens to Figma. Checks: `tokens.json` parses as DTCG and every alias resolves (import-ready); no quoted CSS functional expressions in generated token files (see Fixed — this class of bug shipped and was caught live); every `var()` consumed in component/preview CSS resolves somewhere in the workshop; every component directory carries a stories file and index barrel; every portable inventory component has a recorded porting status. Each check encodes a failure class found in real extraction runs. Also reports Figma round-trip readiness with the exact `figma_import_tokens` call for design-led orgs.
+- **`figma_ds_status` — porting progress across sessions.** Read a progress summary, or record a component as `pending` / `in-progress` / `ported` / `skipped` with notes and its story file. Persisted in `<outDir>/.extraction/status.json`, so an engagement spanning dozens of components and many sessions resumes where it left off instead of re-deriving what's done.
+
+### Fixed
+
+- **Token formatters quoted CSS functional expressions, silently killing transitions.** The CSS-variables, SCSS, and Tailwind v4 formatters share a `needsQuoting()` heuristic for string-typed token values, and it treated functional expressions as string literals — so an easing token rendered as `--easing-standard: "cubic-bezier(0.4, 0, 0.2, 1)";`. That is *syntactically valid* CSS, which is what makes it dangerous: nothing errors, the variable simply makes every declaration that consumes it invalid, and the effect is a transition that doesn't animate. Found live during extraction validation — a quoted `cubic-bezier` easing killed a button's hover transition with no diagnostic anywhere. Functional expressions (`cubic-bezier(...)`, `calc(...)`, `clamp(...)`, `var(...)`, `color-mix(...)`, etc.) are now recognized as CSS values and emitted unquoted. **This affects `figma_export_tokens` output too**, not just the new extraction tools — if your exported tokens include easing, duration, or calc values, re-export to pick up the fix. `figma_ds_verify` includes a quoted-expression scan so a regression of this class fails an eval instead of shipping.
+- **`figma_lint_design`'s AI-facing description undersold its design-system checks.** The token-misuse rule — a semantic token bound to the wrong property, e.g. a `bg/*` or `surface/*` variable used as a text fill — was live in the audit, but the tool description still listed only four design-system rules. Clients that choose rules from the description had no way to know the check existed. The description now lists all five.
+
+### Internal
+
+- New extraction engine under `src/core/extraction/` (walker, detectors, component inventory, architecture classifier, token extractor, scaffolder, Storybook preset, verifier) — dependency-free scanning: package.json evidence plus file evidence, no AST, no execution of user code. New Jest suite `tests/design-system-extraction.test.ts` exercises it against fixture codebases in `tests/fixtures/`.
+
+## [1.39.1] - 2026-08-02
+
+Server-only. **No plugin re-import needed** — and if you were being told to re-import repeatedly after upgrading to 1.39.0, this is the fix for that.
+
+### Fixed
+
+- **An older server told a newer plugin to re-import, and the banner could never be cleared.** After upgrading, the Desktop Bridge could keep showing *"Plugin update available — re-import it in Figma"* no matter how many times you re-imported. Re-importing was the one thing that could not help: it only ever installs the same or a newer plugin.
+  - **Cause.** `computePluginUpdateAvailable()` was a bare inequality (`pluginVersion !== bundledPluginVersion`) with no direction check, so it fired when the connected plugin was *newer* than the server's bundled copy as readily as when it was older.
+  - **Why it is a normal state rather than an edge case.** The server occupies a port in the 9223–9232 range and several instances run at once (one per MCP client, and clients like Claude Desktop spawn more than one). `BUNDLED_PLUGIN_VERSION` is parsed once at module load, so every server still running from before an upgrade holds the old value in memory and nags a correctly-updated plugin. Reproduced live on the v1.39.0 release: four leftover v1.38.2 servers with 19 hours of uptime, each sending `PLUGIN_UPDATE_AVAILABLE` to a freshly re-imported 1.39.0 plugin.
+  - **Fix.** Compare direction with a new exported `compareSemver()` and flag only when the bundled copy is genuinely newer. An older server now stays quiet, since it has nothing to offer. Unparseable versions fall back to the previous inequality so an unusual build still prompts, and a plugin reporting no version at all is still flagged — both unchanged.
+  - **Workaround if you are on 1.39.0** and don't want to upgrade yet: quit the MCP clients holding the older server processes (they outlive the client that spawned them), leaving only servers on the current version.
+  - Close relative of the v1.33.1 false-banner bug, which corrected *which* version was compared but left the direction unchecked.
+
+### Internal
+
+- Nine new tests around the version handshake, including numeric-not-lexicographic ordering (`1.9.0` vs `1.10.0`) and the unparseable-version fallback. The three direction-specific cases were each verified to fail against the previous logic before the fix landed. 1452 tests passing.
+
+
+## [1.39.0] - 2026-08-02
+
+Multi-file work. If you keep several files of a design system open at once, you can now run the same code across them concurrently instead of switching the active file and repeating yourself. Based on community PR [#107](https://github.com/southleft/figma-console-mcp/pull/107) from [@Wolfr](https://github.com/Wolfr) (Johan Ronsse), who hit this driving nine files at once.
+
+**Plugin re-import is recommended but not required.** The new tools work with your existing plugin. Re-importing `manifest.json` additionally restores two response fields that a relay bug has been dropping (see Fixed).
+
+### Added
+
+- **`figma_execute_across_files` — run one script against several connected files at once, concurrently.** For cross-file consistency work: auditing every file in a multi-file design system for the same problem, or applying one mechanical fix across a known set. Replaces "open file, run plugin, repeat per file."
+  - Each file's code runs in that file's own plugin context, so failures are isolated — one file throwing or timing out doesn't affect the others. Results come back as a per-file map with `totalSucceeded` / `totalFailed`, and the call is only reported as an error if *every* targeted file failed.
+  - Per-file timeouts apply independently. Verified live across four files: 4 × 2s of work completed in ~3.0s wall clock with all four dispatches starting within 5ms of each other, versus ~8s if it were serialized.
+  - **You must say which files to target** — pass `fileKeys`, or `allFiles: true`. There is deliberately no "everything by default": this executes arbitrary code in files you may be actively editing, including one pinned by target lock, so hitting all of them is a decision rather than what happens when you leave a parameter out. Naming files explicitly is strongly preferred for anything that writes.
+  - Requested keys that aren't connected come back in `missingFileKeys` without preventing the rest from running.
+  - Local Mode only — Cloud Mode pairs with exactly one plugin instance.
+- **`figma_execute` accepts an optional `fileKey`.** Runs against one specific connected file without changing the active file or releasing target lock, so an agent can work in file A while you work in file B. Get connected keys from `figma_list_open_files`. Local Mode only.
+
+### Changed
+
+- **The transport was already concurrent; nothing was using it.** `sendCommand` has accepted a target file key all along, pending requests are keyed by request id, and the plugin's relay hop is id-keyed too — no layer ever serialized. The gap was that no tool threaded a file key down to it. This release is additive at the tool layer; transport, target lock, and port discovery are untouched.
+- **Cloud Mode now rejects `fileKey` instead of ignoring it.** The write tools are shared between Local and Cloud, so the new parameter is visible in both. Cloud pairs with a single plugin instance and cannot honor it — silently running against the paired file would have reported a successful write to the wrong file with nothing in the response to reveal it.
+
+### Fixed
+
+- **The Desktop Bridge relay silently dropped `resultAnalysis` and `fileContext` from every `figma_execute` response.** `handleResult()` in `ui.html` rebuilds the plugin's message field by field rather than forwarding it, and neither field was on the list. `code.js` has sent both for a long time; neither has ever reached the server in any released version.
+  - **`figma_execute`'s own tool description instructs callers to "check `resultAnalysis.warning` for silent failures"** — that field never arrived, so the guidance has been unfollowable since it was written. `fileContext` reports which file the code actually ran in, which is what makes per-file targeting verifiable rather than assumed.
+  - **Why it survived this long:** the server-side tests mock the connector, so they asserted a contract the transport doesn't honor and passed regardless. Same failure mode as the v1.38.1 bridge-envelope bug. It surfaced here only because live multi-file testing expected `fileContext` and found it missing.
+  - **Requires re-importing `manifest.json`** to take effect — Figma caches plugin files at the app level. Everything else in this release works without it, and mixed plugin versions degrade cleanly: un-reimported files still return correct results, just without these two fields.
+  - Added `tests/relay-field-passthrough.test.ts`, which reads the real plugin files and asserts every field `code.js` sends on `EXECUTE_CODE_RESULT` is relayed — so the next field added fails a test instead of vanishing. Confirmed it fails when the passthrough is removed.
+- **A connected file reporting no file key could have had its script redirected to the active file.** An absent key fell through to the transport's active-file default, which would have run the code against that file a second time and reported it as a success. Unreachable in practice — a client without a file key is never registered — but it failed in the wrong direction. Such files are now skipped and listed in `skippedUnidentifiedFiles`.
+
+### Internal
+
+- **`scripts/release.sh` created the GitHub Release before the version bump was committed.** `gh release create` on a tag that doesn't exist yet builds one from the remote default branch head — the commit *without* the bump — and that tag push fires the publish workflow against a tree still carrying the previous version. It also captured the CHANGELOG section while it was still an empty scaffold. The step now defers with the exact command to run after tagging. Caught during this release; the mis-triggered run was cancelled before it published.
+- **The npm auth precheck is advisory rather than a hard gate.** Publishing has run in CI via Trusted Publishing / OIDC since v1.38.x, so an expired local token can't block a release that never touches it. It still warns, since the token matters for the manual fallback.
+- 52 suites / 1443 tests passing.
+
+
+## [1.38.2] - 2026-07-29
+
+### Fixed
+
+- **"Server disconnected" — the MCP server's own reaper was terminating healthy servers.** If your MCP client kept dropping the Figma Console connection and reconnecting only bought you a few minutes, this was why. It affected every client equally (reproduced in both Claude Code and Claude Desktop) because the fault was server-side, and it is unrelated to the older Desktop Bridge plugin reconnect issues.
+  - **Primary cause: the liveness probe could never succeed.** The reaper probes a sibling's `/health` before deciding it is dead, but it requested `http://127.0.0.1:{port}` while the WebSocket server binds `localhost` — which Node resolves to the **IPv6 loopback** on dual-stack macOS (`lsof` shows `[::1]:9223`, with nothing listening on IPv4). curl therefore returned connection-refused for perfectly healthy servers, which the caller maps to "confirmed dead". Every kill-safety gate built on that probe was inverted from a protection into a rubber stamp — including the one written specifically to spare siblings after the machine wakes from sleep. Verified live on a server actively handling a session: `127.0.0.1` gave curl exit 7, `localhost` gave exit 0.
+  - **Port advertisement files were written non-atomically.** A plain truncate-then-write, re-run every 30s per instance while every sibling scans all ten files in the range. A reader landing in that window got a parse error — and both cleanup paths treated an unparseable file as "corrupt, delete it", with no liveness check. That stranded a healthy server as a port-holder with no port file.
+  - **The orphan path killed without asking.** A process holding a port with no port file was terminated outright, never probed, even though the probe helper already existed and the sibling code path used it.
+  - **A stranded server could never recover.** The heartbeat returned early when its own file was missing, so a server that lost its file stayed unadvertised permanently — and an unadvertised port-holder is exactly what the orphan path kills.
+  - **Fixes:** probe `localhost` so curl tries every resolved address; write port files atomically via temp-file + `rename`; never delete a file on a parse failure; health-probe before the orphan kill in both the sync and async paths; and re-advertise from the heartbeat when our own file has gone missing, guarded by in-process port ownership so it can never resurrect a file after clean shutdown or claim a port we do not hold.
+  - **Important:** this only protects **newly started** server processes. A server already running an older build keeps the broken probe and will still terminate healthy siblings — so after upgrading, fully restart your MCP clients rather than just reconnecting. On macOS/Linux you can confirm nothing stale is left with `pkill -f 'figma-console-mcp/dist/local.js'` before restarting.
+
+### Internal
+
+- Two existing tests asserted the unsafe behaviour (`should clean up corrupt files`) and now assert the file is preserved instead. Seven new regression tests cover probe addressing, atomic writes, heartbeat self-healing, and the orphan-path probe gate; each was verified to fail against the pre-fix source before the fix was applied. 1422 tests passing.
+
+
+## [1.38.1] - 2026-07-29
+
+### Fixed
+
+- **`figma_get_library_variables` always reported 0 collections, and `figma_import_library_variable` reported failed imports as successes.** Both tools have been broken since they shipped in v1.29.0 — neither has ever returned a correct result in any released version. If you subscribed a team library and this tool told you it found nothing, that was the bug, not your file.
+  - **Root cause.** `connector.executeCodeViaUI()` resolves to the Desktop Bridge envelope `{ success, result }` built by `handleResult()` in `ui.html`, never the injected script's bare return value. Both tools read the envelope directly, so `Array.isArray(envelope)` was always `false` (collections became `[]`), the `__error` sentinel landed at `.result.__error` and its guard was dead code, and `envelope.id` was always `undefined`.
+  - **Why it was easy to miss.** The failure presented as a *success* — an empty result with a plausible hint attached ("subscribe a library via Figma > Assets panel"), so it read as a legitimate negative answer rather than a fault. The import half was worse: the side effect still happened plugin-side, but the report came back as a success with `id: undefined`, so anyone scripting a bulk import could not distinguish a genuine failure from a real one.
+  - **Fix.** Both tools now unwrap via a shared `unwrapBridgeResult()`, which additionally maps a bridge-level `success: false` onto the `__error` path — so a plugin timeout surfaces as a real error instead of being swallowed as "0 collections". An import that yields no `id` is now an explicit error rather than a success.
+  - Audited all 26 `executeCodeViaUI` call sites across `src/`; every other caller already unwrapped correctly. Only these two were affected.
+  - Reported by **Isabella Minzly**, with an accurate root-cause diagnosis.
+
+### Changed
+
+- **`figma_import_library_variable` now returns `isError` on failure paths that previously reported success.** A failed import — bad key, unsubscribed library, plugin timeout, or any response carrying no variable `id` — is now a loud error carrying the underlying message. Callers that were checking only for the presence of `imported` should check `isError`. Successful imports are unchanged in shape, except that `imported` is now the variable itself rather than the bridge envelope that wrapped it.
+
+### Internal
+
+- **Bridge mocks in `tests/library-tools.test.ts` encoded a wire contract that does not exist.** They resolved `executeCodeViaUI` to the bare script value, which is why a total failure of both tools shipped green and stayed green for two months. All mocks now go through a `bridge()` helper that reproduces the real `{ success, result }` envelope, plus six regression tests asserting on the envelope shape specifically. The new tests were verified to fail against the pre-fix source (13 failures) before the fix was applied.
+
+
+## [1.38.0] - 2026-07-25
+
+### Added
+
+- **Ongoing component changelog in generated docs** — `figma_generate_component_doc` gained an opt-in `history` parameter that pulls a *real* changelog instead of only echoing hand-written `codeInfo.changelog` entries. Previously the tool's `changelog` section was pure pass-through: if you didn't hand it version rows, the section silently disappeared. The version-diff machinery already existed (`figma_diff_versions`, `figma_generate_changelog`, `figma_blame_node`) — the doc generator just never called it.
+  - `history.figma` walks Figma version history and diffs each consecutive pair **scoped to the component**, emitting one row per version that actually changed it. Reuses the same `diffNode` engine as `figma_diff_versions`, so coverage matches exactly.
+  - `history.git` runs `git log` for the component's source files, derived automatically from `codeInfo.filePath` and every `codeInfo.sourceFiles[].path` (or set `history.gitPaths` explicitly). Local mode only.
+  - Output is a `## History` section with **Design history**, **Code history**, and — folding in any `codeInfo.changelog` you pass — **Release notes**. Frontmatter also gains `figmaVersion` / `figmaVersionDate` design provenance, kept separate from the code-side `version` semver.
+  - Both sources default to **off**, so callers that don't opt in get byte-identical output to v1.37.1, including the original `## Changelog` section.
+  - New `historySummary` field on the tool result reports row counts, API calls, resolved git paths, `usedAutosaveFallback`, `latestVersionId`, and any degradation notes.
+
+### Changed
+
+- **Design history prefers labeled versions but falls back to auto-saves.** Labeled versions make better changelog rows, but plenty of real design-system files have none at all — this was verified against a mature system carrying 72 auto-saves and 0 labeled versions, where a labeled-only walk produces an empty section. History now retries with auto-saves when fewer than two labeled versions exist, and says so in a note that also points at Figma's *right-click a version → Add label* flow. Files that do curate labels never see the note and never pay the extra API call.
+- **Auto-save rows render as `_(auto-save)_` plus their date** rather than Figma's 19-digit numeric version ID, which carries no meaning for a docs reader. The raw ID remains available programmatically as `historySummary.design.latestVersionId`.
+
+### Fixed
+
+- **Detailed-mode variable-binding changes are grouped by property instead of enumerated per node.** Binding a single token across a component set fans out to one entry per variant — on a real 24-variant Button that produced 44 near-identical bullets inside one markdown table cell, destroying the table. Bindings now collapse to `Variable bound: \`counterAxisSpacing\` on 28 layers`, which is both readable and *more* informative than the wall of text it replaces. A 12-bullet-per-row cap with an explicit `…and N more changes` marker backstops any other source of fan-out.
+
+### Notes
+
+- **No new tools** — this is an additive parameter on an existing tool, so Local/Cloud/Remote tool counts are unchanged at 113/101/9.
+- **Server-only release — no plugin re-import needed.**
+- History is best-effort by design and never fails doc generation: a missing `file_versions:read` scope, versions pruned by plan-tier retention, a non-git directory, or untracked paths all degrade to an explanatory note. Figma's REST version snapshots omit description and Dev Mode annotation edits, raw layout/visual properties, and variable *value* changes; the generated doc states this inline so an empty table is never misread as "nothing changed".
+
+
+## [1.37.1] - 2026-07-22
+
+### Changed
+
+- **Design-system audit scoring calibration** — measurement corrections so the six-category audit (dashboard app + `figma_audit_design_system_report`) scores what a system's architecture actually earns. Checks previously measured targets that were unreachable for ANY healthy system:
+  - **Alias usage** is now measured over non-primitive-tier values. Primitive tiers — detected by zero aliases, largest raw-value contribution, or tier naming (`primitive`/`core`/`base`/`palette`/`brand`/`foundation`) — are alias *targets*; the old all-values ratio punished systems for having a primitive tier at all, and capped multi-root architectures (e.g. a Brand tier plus a Primitive tier) well below 100 forever.
+  - **Color contrast** resolves alias chains (semantic tokens are usually aliases — skipping them dropped exactly the tokens whose names drive pairing and fell back to noisy scale-vs-scale cross-products), excludes translucent colors (they composite; a 5%-alpha wash is not a 1.0:1 background), and checks only *declared* pairs: `content/on/<family>` and `<family>-strong` text against that family's surfaces, `inverse` ↔ `inverted`, family-colored and plain content against the canvas, and component-scoped tokens by path mirror. Foreground candidates whose names also match the background pattern (e.g. `body/background`) are surfaces, not text.
+  - **Casing consistency** is scored per pool — components and variables legitimately follow different conventions (TitleCase components + kebab token paths) — with ambiguity-aware matching (a single lowercase word is simultaneously valid camelCase/kebab/snake) and numeric scale segments (`100`, `3.5`) skipped.
+  - **Mode naming consistency** now flags the same mode *concept* spelled differently across collections (`Light` vs `light`) instead of demanding identical mode sets — a theme collection's Light/Dark and a density collection's Compact/Comfortable are architecture, not inconsistency.
+  - **Variable naming** judges visual color words (`blue`, `gray`, …) only outside the primitive tier — the palette is *supposed* to describe appearance; the semantic contract ("names survive theme changes") only applies to the tokens a theme re-points.
+
+### Fixed
+
+- `figma_audit_design_system_report`'s `forceRefresh` now bypasses the variables cache as well as the audit cache — previously a stale `variablesCache` entry could survive a forced re-crawl and under-report alias counts until the entry's 5-minute TTL expired.
+
+
+## [1.37.0] - 2026-07-22
+
+### Added
+
+- **`figma_audit_design_system_report`** — a plain, always-available companion to the Design System Dashboard MCP App. The dashboard's `figma_audit_design_system` tool is only visible to MCP-Apps-capable hosts (e.g. Claude Desktop) and is gated behind `ENABLE_MCP_APPS`; the new report tool runs the **same deterministic scoring engine** and returns the audit as data, so any MCP client (Claude Code, headless agents, CI) can audit a design system with no UI support and no env flag.
+  - **Chunked by design:** the default `summary` output is bounded regardless of file size; per-dimension detail is fetched one category at a time via `category` (naming-semantics | token-architecture | component-metadata | accessibility | consistency | coverage); `format: "full"` clamps per-finding examples (≤5) and locations (≤10).
+  - **Cached by design:** audit raw data is cached for 5 minutes (`forceRefresh` to bypass), so a summary call plus six drill-downs cost one crawl.
+  - **Remediation map:** every finding now reports whether this MCP can fix it — `design` (auto-fixable via write tools), `design-assisted` (needs a design decision first), or `manual` — including the exact tools and approach (`scoring/remediation.ts`). Reports end with a "what this MCP can fix" section.
+
+### Changed
+
+- **Audit component data is now live-first.** The audit fetch prefers a Desktop Bridge crawl (`GET_LOCAL_COMPONENTS` — chunked in the plugin, pages processed in batches of 3 with event-loop yields) over the REST published-library endpoints, which only reflect the last publish. The bridge result is **fileKey-verified**: if the bridge is connected to a different file than requested, the audit refuses the data and falls back to REST rather than silently scoring the wrong file. The chosen source is reported in `dataAvailability.componentsSource` (`bridge-live` | `rest-published` | `none`) and surfaced as a caveat in both the dashboard app text and the report tool whenever scores come from a published snapshot or empty data. This resolves a class of confusing score differences where two people auditing "the same file" scored different data.
+- Scoring engine accuracy fixes (both the dashboard app and the report tool benefit):
+  - Component-naming and casing checks now score the published surface (standalone components + component sets) instead of variant components, whose Figma-mandated `prop=value` names (e.g. `State=Hover`) could never pass and structurally zeroed the check for any variant-based library.
+  - The PascalCase check accepts Title Case with spaces ("Form Field", "Section Header") — same convention, different spelling.
+  - Core-component coverage searches component-set names, so set-based libraries no longer report existing Input/Navigation/etc. as missing.
+  - Color-contrast pairing recognizes the `color/content/*` semantic convention, and the `on-` foreground fragment is anchored to a path segment (no more false matches inside words like "annotation-gray").
+  - State-variant coverage treats synonyms as equivalent: `active`≈`pressed`, `error`≈`danger`≈`invalid`, `selected`≈`checked`, `focus`≈`focused`, `hover`≈`hovered`.
+  - Components and sets prefixed with `.` or `_` (Figma's own unpublished/internal convention, same prefix FigmaLint documents) are excluded from scorable units.
+
+### Fixed
+
+- The design-system audit tooling was unreachable for standard MCP clients: everything was registered inside the `ENABLE_MCP_APPS` block. The plain report tool and its data fetch now register unconditionally; only the visual dashboard app remains gated.
+
+
+## [1.36.0] - 2026-07-16
+
+### Added
+
+- **Target lock for multi-file parallel work** — `figma_navigate` gains an optional `lock: true` flag that pins the active file as the command target. This makes it safe to have an AI agent working in one Figma file while you work in another: once pinned, new plugin connections, reconnects, and your own selection/page changes in *other* files can no longer move the target, so writes can't silently land in the wrong file.
+  - The pin auto-releases when it's no longer valid: if the pinned file's plugin disconnects, or if that plugin navigates to a different file. Switching the target to another file (or passing `lock: false`) also releases it.
+  - `figma_list_open_files` now reports a `targetLocked` flag so an agent can verify the pin before a write batch (a lightweight pre-write guard).
+  - New server API on `FigmaWebSocketServer`: `setActiveFile(fileKey, lock?)`, `lockTarget()`, `unlockTarget()`, `isTargetLocked()`.
+
+### Changed
+
+- The active-file target still follows the most-recently-connected/interacted file by default (unchanged behavior) — the lock is strictly opt-in. Without it, nothing about routing changes from v1.35.0.
+
+### Fixed
+
+
+## [1.35.0] - 2026-07-09
+
+### Added
+
+- **Figma Slots write support** — 5 new Desktop Bridge tools close [#29](https://github.com/southleft/figma-console-mcp/issues/29), building on the slot *read* support (`extractSlots`) that shipped in v1.33.0. Slots went GA at Config 2026; the Plugin API surface was live-validated against Figma Desktop on 2026-07-09. Based on [PR #77](https://github.com/southleft/figma-console-mcp/pull/77) by [@simonesalvucci](https://github.com/simonesalvucci), updated to the GA API:
+  - **`figma_create_slot`** — create a SlotNode inside a component via `createSlot()`; the linked SLOT component property is created automatically and renaming the slot renames the property. Works on standalone COMPONENTs *and* variant components inside a COMPONENT_SET (the beta-era restriction was lifted at GA).
+  - **`figma_get_slots`** — list slots on a COMPONENT, COMPONENT_SET (aggregated across variants), or INSTANCE: ids, names, property keys, dimensions, layout, and current children.
+  - **`figma_append_to_slot`** — populate an instance's slot by cloning an existing node (`sourceNodeId`) or creating new content (`nodeType` + properties). Slot content **cannot** be set via `figma_set_instance_properties` (Figma rejects it by design) — this is the population path. Clones snap to the slot origin in NONE-layout slots so they stay visible.
+  - **`figma_reset_slot`** — clear a slot's content on an instance.
+  - **`figma_add_slot_property`** — bind an existing frame as a slot via a manual SLOT property (alternative to `figma_create_slot` for retrofitting); supports `description` and `preferredValues`, and works with frames inside a set's variant components.
+- `figma_add_component_property` now supports the `SLOT` property type, plus `description`/`preferredValues` options.
+
+### Changed
+
+- `figma_add_component_property` validates `defaultValue` upfront: required and non-empty for TEXT, INSTANCE_SWAP, and VARIANT (Figma rejects an empty VARIANT default — live-validated), optional for BOOLEAN, omitted for SLOT. Failures now produce actionable errors instead of opaque plugin-side ones.
+- `ANALYZE_COMPONENT_SET`'s `ai_instruction` now tells agents to populate slots via `figma_append_to_slot` rather than `setProperties`.
+
+### Fixed
+
+- Desktop Bridge relay: `slot` response payloads are now forwarded through the ui.html result whitelist (previously dropped for `APPEND_TO_SLOT`).
+- `APPEND_TO_SLOT` no longer empties the slot before validating the source node — content is prepared first, so a bad `sourceNodeId` leaves existing slot content untouched; cloning a main component is rejected *before* the clone (no more orphaned duplicates).
+
+**Plugin re-import required** to use the new slot tools (`code.js` + `ui.html` changed): Plugins → Development → Import plugin from manifest → `~/.figma-console-mcp/plugin/manifest.json`.
+
+
 ## [1.34.0] - 2026-07-03
 
 ### Added
@@ -1100,6 +1399,20 @@ Connection health protocol — agents no longer need custom health-check logic t
 - Real-time Figma Desktop Bridge plugin
 - Support for both local (stdio) and Cloudflare Workers deployment
 
+[1.40.4]: https://github.com/southleft/figma-console-mcp/compare/v1.40.3...v1.40.4
+[1.40.3]: https://github.com/southleft/figma-console-mcp/compare/v1.40.2...v1.40.3
+[1.40.2]: https://github.com/southleft/figma-console-mcp/compare/v1.40.1...v1.40.2
+[1.40.1]: https://github.com/southleft/figma-console-mcp/compare/v1.40.0...v1.40.1
+[1.40.0]: https://github.com/southleft/figma-console-mcp/compare/v1.39.1...v1.40.0
+[1.39.1]: https://github.com/southleft/figma-console-mcp/compare/v1.39.0...v1.39.1
+[1.39.0]: https://github.com/southleft/figma-console-mcp/compare/v1.38.2...v1.39.0
+[1.38.2]: https://github.com/southleft/figma-console-mcp/compare/v1.38.1...v1.38.2
+[1.38.1]: https://github.com/southleft/figma-console-mcp/compare/v1.38.0...v1.38.1
+[1.38.0]: https://github.com/southleft/figma-console-mcp/compare/v1.37.1...v1.38.0
+[1.37.1]: https://github.com/southleft/figma-console-mcp/compare/v1.37.0...v1.37.1
+[1.37.0]: https://github.com/southleft/figma-console-mcp/compare/v1.36.0...v1.37.0
+[1.36.0]: https://github.com/southleft/figma-console-mcp/compare/v1.35.0...v1.36.0
+[1.35.0]: https://github.com/southleft/figma-console-mcp/compare/v1.34.0...v1.35.0
 [1.34.0]: https://github.com/southleft/figma-console-mcp/compare/v1.33.2...v1.34.0
 [1.33.2]: https://github.com/southleft/figma-console-mcp/compare/v1.33.1...v1.33.2
 [1.33.1]: https://github.com/southleft/figma-console-mcp/compare/v1.33.0...v1.33.1

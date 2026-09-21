@@ -14,7 +14,7 @@ export interface IFigmaConnector {
   executeInPluginContext<T = any>(code: string): Promise<T>;
   getVariablesFromPluginUI(fileKey?: string): Promise<any>;
   getVariables(fileKey?: string): Promise<any>;
-  executeCodeViaUI(code: string, timeoutMs?: number): Promise<any>;
+  executeCodeViaUI(code: string, timeoutMs?: number, fileKey?: string): Promise<any>;
 
   // Variable operations
   updateVariable(variableId: string, modeId: string, value: any): Promise<any>;
@@ -38,7 +38,13 @@ export interface IFigmaConnector {
   deleteVariableCollection(collectionId: string): Promise<any>;
 
   // Component operations
-  getComponentFromPluginUI(nodeId: string): Promise<any>;
+  /**
+   * Read a component through the plugin. Pass `fileKey` whenever the caller knows
+   * which file it means: node ids are only unique WITHIN a file, so without it
+   * the ACTIVE file answers — possibly with a different component that happens
+   * to share the id. Rejects if that file isn't connected (callers fall back to REST).
+   */
+  getComponentFromPluginUI(nodeId: string, fileKey?: string): Promise<any>;
   getLocalComponents(): Promise<any>;
   setNodeDescription(nodeId: string, description: string, descriptionMarkdown?: string): Promise<any>;
   addComponentProperty(nodeId: string, propertyName: string, type: string, defaultValue: any, options?: any): Promise<any>;
@@ -54,6 +60,21 @@ export interface IFigmaConnector {
     parentId?: string;
     position?: { x: number; y: number };
   }): Promise<any>;
+
+  // Slot operations (Figma Slots open beta)
+  createSlot(nodeId: string, options?: { name?: string; width?: number; height?: number; layoutMode?: string }): Promise<any>;
+  getSlots(nodeId: string): Promise<any>;
+  appendToSlot(params: {
+    slotId?: string;
+    instanceId?: string;
+    slotName?: string;
+    sourceNodeId?: string;
+    nodeType?: string;
+    properties?: Record<string, string | number>;
+    clone?: boolean;
+    clearExisting?: boolean;
+  }): Promise<any>;
+  resetSlot(params: { slotId?: string; instanceId?: string; slotName?: string }): Promise<any>;
 
   // Node manipulation
   resizeNode(nodeId: string, width: number, height: number, withConstraints?: boolean): Promise<any>;
@@ -112,7 +133,7 @@ export interface IFigmaConnector {
   getTextStyles(): Promise<any>;
 
   // Annotation operations
-  getAnnotations(nodeId: string, includeChildren?: boolean, depth?: number): Promise<any>;
+  getAnnotations(nodeId: string, includeChildren?: boolean, depth?: number, fileKey?: string): Promise<any>;
   setAnnotations(nodeId: string, annotations: any[], mode?: 'replace' | 'append'): Promise<any>;
   getAnnotationCategories(): Promise<any>;
 

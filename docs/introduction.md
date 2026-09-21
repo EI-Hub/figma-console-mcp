@@ -177,7 +177,7 @@ Figma Console MCP makes this real. Your design system becomes:
 
 ### Recommended: NPX Setup (Full Capabilities)
 
-Get all 107 tools including design creation, variable management, and component instantiation.
+Get all 121 tools including design creation, variable management, and component instantiation.
 
 <Steps>
   <Step title="Get a Figma Token">
@@ -196,7 +196,7 @@ Get all 107 tools including design creation, variable management, and component 
 
 ### Cloud Mode (Web AI Clients)
 
-Using Claude.ai, v0, Replit, or Lovable? Get full write access (96 tools) without installing Node.js.
+Using Claude.ai, v0, Replit, or Lovable? Get full write access (101 tools) without installing Node.js.
 
 <Steps>
   <Step title="Run the Desktop Bridge Plugin">
@@ -289,7 +289,7 @@ Figma Console MCP offers three connection tiers with different capabilities:
 
 | Feature | Local (NPX/Git) | Cloud Mode | Remote (Read-Only) |
 |---------|-----------------|------------|-------------------|
-| **Total tools** | **107** | **96** | **9** |
+| **Total tools** | **114** | **101** | **9** |
 | **Setup** | ~10 minutes | ~5 minutes | ~2 minutes |
 | **Create designs** | ✅ | ✅ | ❌ |
 | **Edit designs** | ✅ | ✅ | ❌ |
@@ -347,7 +347,7 @@ Figma Console MCP offers three connection tiers with different capabilities:
     Real-world examples and workflows
   </Card>
   <Card title="All Tools" icon="wrench" href="/tools">
-    Complete reference for 107 tools
+    Complete reference for 121 tools
   </Card>
 </Columns>
 

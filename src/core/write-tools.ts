@@ -34,7 +34,9 @@ When creating: place inside a named Section, positioned BELOW or AWAY from exist
 After creating: screenshot to verify clean placement and no overlaps.
 On failure/retry: DELETE any partial artifacts (empty frames, orphaned layers, blank pages) before retrying. Use node.remove() to clean up.
 Pages: NEVER create a new page if one with that name already exists — use the existing one. If you created a blank page during a failed attempt, delete it.
-Layers: If your code creates helper frames, placeholder nodes, or intermediate layers that aren't part of the final result, remove them.`,
+Layers: If your code creates helper frames, placeholder nodes, or intermediate layers that aren't part of the final result, remove them.
+
+**MULTI-FILE (Local Mode only):** Pass fileKey to run this in a specific connected file without switching the active file/target lock (see figma_list_open_files). To run the same code across several connected files at once, use figma_execute_across_files instead. Cloud Mode pairs with a single plugin instance and rejects fileKey.`,
 		{
 			code: z
 				.string()
@@ -49,13 +51,20 @@ Layers: If your code creates helper frames, placeholder nodes, or intermediate l
 				.describe(
 					"Execution timeout in milliseconds (default: 5000, max: 30000)",
 				),
+			fileKey: z
+				.string()
+				.optional()
+				.describe(
+					"Local Mode only. Run against this specific connected file instead of the active file. Does not change the active file or target lock. Get connected fileKeys from figma_list_open_files. Rejected in Cloud Mode, which pairs with a single plugin instance.",
+				),
 		},
-		async ({ code, timeout }) => {
+		async ({ code, timeout, fileKey }) => {
 			try {
 				const connector = await getDesktopConnector();
 				const result = await connector.executeCodeViaUI(
 					code,
 					Math.min(timeout, 30000),
+					fileKey,
 				);
 
 				return {
@@ -1401,33 +1410,72 @@ After instantiating components, use figma_take_screenshot to verify the result l
 	// Tool: Add Component Property
 	server.tool(
 		"figma_add_component_property",
-		"Add a new component property to a component or component set. Properties enable dynamic content and behavior in component instances. Supported types: BOOLEAN (toggle), TEXT (string), INSTANCE_SWAP (component swap), VARIANT (variant selection).",
+		"Add a new component property to a component or component set. Properties enable dynamic content and behavior in component instances. Supported types: BOOLEAN (toggle), TEXT (string), INSTANCE_SWAP (component swap), VARIANT (variant selection), SLOT (freeform slot — prefer figma_create_slot for new slots).",
 		{
 			nodeId: z.string().describe("The component or component set node ID"),
 			propertyName: z
 				.string()
 				.describe(
-					"Name for the new property (e.g., 'Show Icon', 'Button Label')",
+					"Name for the new property (e.g., 'Show Icon', 'Button Label', 'Content')",
 				),
 			type: z
-				.enum(["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT"])
+				.enum(["BOOLEAN", "TEXT", "INSTANCE_SWAP", "VARIANT", "SLOT"])
 				.describe(
-					"Property type: BOOLEAN for toggles, TEXT for strings, INSTANCE_SWAP for component swaps, VARIANT for variant selection",
+					"Property type: BOOLEAN for toggles, TEXT for strings, INSTANCE_SWAP for component swaps, VARIANT for variant selection, SLOT for freeform slot areas",
 				),
 			defaultValue: z
 				.union([z.string(), z.number(), z.boolean()])
+				.optional()
 				.describe(
-					"Default value for the property. BOOLEAN: true/false, TEXT: string, INSTANCE_SWAP: component key, VARIANT: variant value",
+					"Default value. Required for TEXT (string), INSTANCE_SWAP (component id), and VARIANT (a non-empty variant option name — Figma rejects empty). Optional for BOOLEAN (defaults false). Omit for SLOT.",
 				),
+			description: z
+				.string()
+				.optional()
+				.describe("Property description (SLOT properties only)"),
+			preferredValues: z
+				.array(
+					z.object({
+						type: z.enum(["COMPONENT", "COMPONENT_SET"]),
+						key: z.string(),
+					}),
+				)
+				.optional()
+				.describe("Preferred components (INSTANCE_SWAP and SLOT only)"),
 		},
-		async ({ nodeId, propertyName, type, defaultValue }) => {
+		async ({ nodeId, propertyName, type, defaultValue, description, preferredValues }) => {
 			try {
 				const connector = await getDesktopConnector();
+				const options: Record<string, unknown> = {};
+				if (description) options.description = description;
+				if (preferredValues) options.preferredValues = preferredValues;
+
+				// SLOT is the only type that takes no default. VARIANT requires a
+				// non-empty default (Figma rejects ''), and TEXT/INSTANCE_SWAP fail
+				// deep in the plugin with opaque errors when the default is missing —
+				// validate here so the caller gets an actionable message.
+				if (
+					(type === "TEXT" || type === "INSTANCE_SWAP" || type === "VARIANT") &&
+					(defaultValue === undefined || defaultValue === "")
+				) {
+					throw new Error(
+						`defaultValue is required for ${type} properties` +
+							(type === "INSTANCE_SWAP"
+								? " (a component id)"
+								: type === "VARIANT"
+									? " (a non-empty variant option name)"
+									: ""),
+					);
+				}
+				const resolvedDefault =
+					type === "SLOT" ? "" : (defaultValue ?? (type === "BOOLEAN" ? false : ""));
+
 				const result = await connector.addComponentProperty(
 					nodeId,
 					propertyName,
 					type,
-					defaultValue,
+					resolvedDefault,
+					Object.keys(options).length > 0 ? options : undefined,
 				);
 
 				if (!result.success) {
@@ -1552,7 +1600,7 @@ After instantiating components, use figma_take_screenshot to verify the result l
 	// Tool: Delete Component Property
 	server.tool(
 		"figma_delete_component_property",
-		"Delete a component property. Only works with BOOLEAN, TEXT, and INSTANCE_SWAP properties (not VARIANT). This is a destructive operation.",
+		"Delete a component property. Works with BOOLEAN, TEXT, INSTANCE_SWAP, and SLOT properties (not VARIANT). This is a destructive operation.",
 		{
 			nodeId: z.string().describe("The component or component set node ID"),
 			propertyName: z
@@ -1596,7 +1644,7 @@ After instantiating components, use figma_take_screenshot to verify the result l
 								{
 									error:
 										error instanceof Error ? error.message : String(error),
-									hint: "Cannot delete VARIANT properties. Only BOOLEAN, TEXT, and INSTANCE_SWAP can be deleted.",
+									hint: "Cannot delete VARIANT properties. BOOLEAN, TEXT, INSTANCE_SWAP, and SLOT can be deleted.",
 								},
 							),
 						},
@@ -3004,7 +3052,7 @@ SIZE GUIDANCE: hard cap 100 variants. The timeout auto-scales with variant count
 		"reflow/responsive (1.4.10), reading order (1.3.2), and disabled context (4.1.2). " +
 		"Best-practice readability hints (opt-in via rules: ['best-practice'] or ['all']): text sizing, line height, letter spacing, paragraph spacing. " +
 		"Note: line/paragraph spacing below 1.5x/2x is NOT a WCAG 1.4.12 failure — 1.4.12 requires supporting user spacing overrides without breaking (a code concern, see figma_scan_code_accessibility), not specific design values — so these are non-normative hints scoped to multi-line text only. " +
-		"Design system checks: hardcoded colors, missing text styles, default names, detached components. " +
+		"Design system checks (5 rules): hardcoded colors, missing text styles, default names, detached components, and token misuse (a semantic token bound to the wrong property, e.g. a bg/* or surface/* variable used as a text fill). " +
 		"Layout checks: missing auto-layout, empty containers. " +
 		"Default audit runs WCAG + design-system + layout (best-practice hints excluded). " +
 		"Returns categorized findings with severity levels (critical/warning/info) and WCAG conformance level (a/aa/aaa/best-practice) so teams can filter by target level. " +

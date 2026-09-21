@@ -119,8 +119,11 @@ export class WebSocketConnector implements IFigmaConnector {
     return this.wsServer.sendCommand('EXECUTE_CODE', { code, timeout: 30000 }, 32000, fileKey);
   }
 
-  async executeCodeViaUI(code: string, timeoutMs = 5000): Promise<any> {
-    return this.wsServer.sendCommand('EXECUTE_CODE', { code, timeout: timeoutMs }, timeoutMs + 2000);
+  async executeCodeViaUI(code: string, timeoutMs = 5000, fileKey?: string): Promise<any> {
+    // fileKey is optional — when passed, routes to that specific connected
+    // client instead of the active file (see sendCommand's targetFileKey),
+    // so code can run against a non-active file without switching to it.
+    return this.wsServer.sendCommand('EXECUTE_CODE', { code, timeout: timeoutMs }, timeoutMs + 2000, fileKey);
   }
 
   // ============================================================================
@@ -201,8 +204,8 @@ export class WebSocketConnector implements IFigmaConnector {
   // Component operations
   // ============================================================================
 
-  async getComponentFromPluginUI(nodeId: string): Promise<any> {
-    return this.wsServer.sendCommand('GET_COMPONENT', { nodeId }, 10000);
+  async getComponentFromPluginUI(nodeId: string, fileKey?: string): Promise<any> {
+    return this.wsServer.sendCommand('GET_COMPONENT', { nodeId }, 10000, fileKey);
   }
 
   async getLocalComponents(): Promise<any> {
@@ -217,8 +220,8 @@ export class WebSocketConnector implements IFigmaConnector {
   // Annotation operations
   // ============================================================================
 
-  async getAnnotations(nodeId: string, includeChildren?: boolean, depth?: number): Promise<any> {
-    return this.wsServer.sendCommand('GET_ANNOTATIONS', { nodeId, includeChildren, depth }, 10000);
+  async getAnnotations(nodeId: string, includeChildren?: boolean, depth?: number, fileKey?: string): Promise<any> {
+    return this.wsServer.sendCommand('GET_ANNOTATIONS', { nodeId, includeChildren, depth }, 10000, fileKey);
   }
 
   async setAnnotations(nodeId: string, annotations: any[], mode?: 'replace' | 'append'): Promise<any> {
@@ -246,6 +249,7 @@ export class WebSocketConnector implements IFigmaConnector {
   ): Promise<any> {
     const params: any = { nodeId, propertyName, propertyType: type, defaultValue };
     if (options?.preferredValues) params.preferredValues = options.preferredValues;
+    if (options?.description) params.description = options.description;
     return this.wsServer.sendCommand('ADD_COMPONENT_PROPERTY', params);
   }
 
@@ -289,6 +293,35 @@ export class WebSocketConnector implements IFigmaConnector {
       params,
       componentSetTimeoutMs(params),
     );
+  }
+
+  // ============================================================================
+  // Slot operations
+  // ============================================================================
+
+  async createSlot(nodeId: string, options?: { name?: string; width?: number; height?: number; layoutMode?: string }): Promise<any> {
+    return this.wsServer.sendCommand('CREATE_SLOT', { nodeId, ...options });
+  }
+
+  async getSlots(nodeId: string): Promise<any> {
+    return this.wsServer.sendCommand('GET_SLOTS', { nodeId });
+  }
+
+  async appendToSlot(params: {
+    slotId?: string;
+    instanceId?: string;
+    slotName?: string;
+    sourceNodeId?: string;
+    nodeType?: string;
+    properties?: Record<string, string | number>;
+    clone?: boolean;
+    clearExisting?: boolean;
+  }): Promise<any> {
+    return this.wsServer.sendCommand('APPEND_TO_SLOT', params);
+  }
+
+  async resetSlot(params: { slotId?: string; instanceId?: string; slotName?: string }): Promise<any> {
+    return this.wsServer.sendCommand('RESET_SLOT', params);
   }
 
   // ============================================================================

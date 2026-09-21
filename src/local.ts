@@ -40,6 +40,8 @@ import { registerLibraryTools, registerLibraryVariableTools } from "./core/libra
 import { registerAccessibilityTools } from "./core/accessibility-tools.js";
 import { registerDiagnoseTool } from "./core/diagnose-tool.js";
 import { registerWriteTools } from "./core/write-tools.js";
+import { registerMultiFileTools } from "./core/multi-file-tools.js";
+import { registerDesignSystemExtractionTools } from "./core/design-system-extraction-tools.js";
 import { registerTokensTools } from "./core/tokens-tools.js";
 import { wrapServerForIdentity } from "./core/identity.js";
 import { PACKAGE_ROOT } from "./core/resolve-package-root.js";
@@ -61,9 +63,13 @@ import {
 	HEARTBEAT_INTERVAL_MS,
 } from "./core/port-discovery.js";
 import { registerTokenBrowserApp } from "./apps/token-browser/server.js";
-import { registerDesignSystemDashboardApp } from "./apps/design-system-dashboard/server.js";
+import {
+	registerDesignSystemAuditTool,
+	registerDesignSystemDashboardApp,
+} from "./apps/design-system-dashboard/server.js";
 import { registerFigJamTools } from "./core/figjam-tools.js";
 import { registerSlidesTools } from "./core/slides-tools.js";
+import { registerSlotTools } from "./core/slot-tools.js";
 
 const logger = createChildLogger({ component: "local-server" });
 
@@ -132,6 +138,20 @@ class LocalFigmaConsoleMCP {
 			timestamp: number;
 		}
 	> = new Map();
+
+	// In-memory cache for assembled design-system audit data. The audit fetch
+	// is heavy (full-file component crawl via the bridge, or several REST
+	// calls), so repeat audits within the TTL — e.g. a summary call followed
+	// by per-category drill-downs — reuse the same snapshot instead of
+	// re-crawling. Maps fileKey -> {data, timestamp}.
+	private auditDataCache: Map<
+		string,
+		{
+			data: any;
+			timestamp: number;
+		}
+	> = new Map();
+	private static readonly AUDIT_CACHE_TTL_MS = 5 * 60 * 1000;
 
 	/**
 	 * Invalidate the variables cache after a write operation.
@@ -981,7 +1001,7 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 		// Tool 6: Navigate / switch active file
 		this.server.tool(
 			"figma_navigate",
-			"Switch the active Figma file target among files that already have the Desktop Bridge plugin running. Local mode is WebSocket-only — this tool does NOT launch a browser or open files. If the requested URL is already the active file, it confirms the connection. If another connected plugin matches the URL, it switches the active target so subsequent tool calls hit that file. If no connected plugin matches, returns guidance for the user to open the Desktop Bridge plugin in the target file. Use figma_list_open_files to see all connected files.",
+			"Switch the active Figma file target among files that already have the Desktop Bridge plugin running. Local mode is WebSocket-only — this tool does NOT launch a browser or open files. If the requested URL is already the active file, it confirms the connection. If another connected plugin matches the URL, it switches the active target so subsequent tool calls hit that file. If no connected plugin matches, returns guidance for the user to open the Desktop Bridge plugin in the target file. Use figma_list_open_files to see all connected files.\n\nPass lock: true to PIN this file as the target — new connections, reconnects, and the user's own selection/page changes in other files will no longer move the target. Use this for parallel work (agent edits one file while the user works in another) so commands can't silently route to the wrong file. Switching to another file (or lock: false) releases the pin; it also releases automatically if the pinned file disconnects.",
 			{
 				url: z
 					.string()
@@ -989,8 +1009,14 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 					.describe(
 						"Figma URL to navigate to (e.g., https://www.figma.com/design/abc123)",
 					),
+				lock: z
+					.boolean()
+					.optional()
+					.describe(
+						"Pin this file as the active target so connections, reconnects, and user interaction in other files won't move it. Defaults to false.",
+					),
 			},
-			async ({ url }) => {
+			async ({ url, lock }) => {
 				try {
 					// Phase 3: local mode now talks to Figma exclusively through the
 					// WebSocket Desktop Bridge plugin. Navigation is plugin-side: we
@@ -1006,6 +1032,11 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 							const isSameFile = !!(requestedFileKey && fileInfo?.fileKey && requestedFileKey === fileInfo.fileKey);
 
 							if (isSameFile) {
+								// Apply/release the pin even when already active, so
+								// `figma_navigate(url, lock: true)` on the current file works.
+								if (lock !== undefined && requestedFileKey) {
+									this.wsServer.setActiveFile(requestedFileKey, lock);
+								}
 								return {
 									content: [
 										{
@@ -1018,8 +1049,10 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 														fileName: fileInfo!.fileName,
 														fileKey: fileInfo!.fileKey,
 													},
+													locked: this.wsServer.isTargetLocked(),
 													message:
-														"Already connected to this file via WebSocket. All tools are ready to use — no navigation needed.",
+														"Already connected to this file via WebSocket. All tools are ready to use — no navigation needed." +
+														(lock ? " Target is now pinned to this file." : ""),
 													ai_instruction:
 														"The requested file is already connected via WebSocket. You can proceed with any tool calls (figma_get_variables, figma_get_file_data, figma_execute, etc.) without further navigation.",
 												},
@@ -1034,7 +1067,7 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 								const connectedFiles = this.wsServer.getConnectedFiles();
 								const targetFile = connectedFiles.find(f => f.fileKey === requestedFileKey);
 								if (targetFile) {
-									this.wsServer.setActiveFile(requestedFileKey);
+									this.wsServer.setActiveFile(requestedFileKey, lock ?? false);
 									return {
 										content: [
 											{
@@ -1047,14 +1080,17 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 															fileName: targetFile.fileName,
 															fileKey: targetFile.fileKey,
 														},
+														locked: this.wsServer.isTargetLocked(),
 														connectedFiles: connectedFiles.map(f => ({
 															fileName: f.fileName,
 															fileKey: f.fileKey,
 															isActive: f.fileKey === requestedFileKey,
 														})),
-														message: `Switched active file to "${targetFile.fileName}". All tools now target this file.`,
+														message: `Switched active file to "${targetFile.fileName}". All tools now target this file.` +
+															(lock ? " Target is pinned — it won't move until you switch files or the plugin disconnects." : ""),
 														ai_instruction:
-															"Active file has been switched via WebSocket. All subsequent tool calls (figma_get_variables, figma_execute, etc.) will target this file. No browser navigation needed.",
+															"Active file has been switched via WebSocket. All subsequent tool calls (figma_get_variables, figma_execute, etc.) will target this file. No browser navigation needed." +
+															(lock ? " The target is now pinned to this file." : ""),
 													},
 												),
 											},
@@ -1693,6 +1729,7 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 
 					const connectedFiles = this.wsServer.getConnectedFiles();
 					const activeFileKey = this.wsServer.getActiveFileKey();
+					const targetLocked = this.wsServer.isTargetLocked();
 
 					return {
 						content: [{
@@ -1700,6 +1737,7 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 							text: JSON.stringify({
 								transport: "websocket",
 								activeFileKey,
+								targetLocked,
 								files: connectedFiles.map(f => ({
 									fileName: f.fileName,
 									fileKey: f.fileKey,
@@ -1714,7 +1752,7 @@ For component-specific design guidance (sizing, proportions, accessibility, etc.
 								message: connectedFiles.length === 1
 									? `Connected to 1 file: "${connectedFiles[0].fileName}"`
 									: `Connected to ${connectedFiles.length} files. Active: "${connectedFiles.find(f => f.isActive)?.fileName || 'none'}"`,
-								ai_instruction: "Use figma_navigate with a file URL to switch the active file. All tools target the active file by default.",
+								ai_instruction: `Use figma_navigate with a file URL to switch the active file. All tools target the active file by default. ${targetLocked ? "The active target is currently PINNED (locked) — it won't move on reconnects or user interaction until you switch files. " : "To work in one file while the user works in another, call figma_navigate with lock: true to pin the target so it can't silently switch. "}`,
 							}),
 						}],
 					};
@@ -2350,7 +2388,7 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 					}
 
 					// LOCAL SEARCH PATH: Use cached design system manifest (existing behavior)
-					const { searchComponents } = await import(
+					const { searchComponents, componentSearchLoadFailure } = await import(
 						"./core/design-system-manifest.js"
 					);
 
@@ -2369,6 +2407,29 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 											hint: "If you're trying to search a published library from another file, pass the libraryFileKey or libraryFileUrl parameter.",
 										},
 									),
+								},
+							],
+							isError: true,
+						};
+					}
+
+					// A failed components fetch leaves nothing to search. Returning
+					// `success: true, results: []` there reads as "no such component
+					// exists" — the caller must be told the search never happened.
+					const loadFailure = componentSearchLoadFailure(
+						cacheEntry.manifest,
+						cacheWarning,
+					);
+					if (loadFailure) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify({
+										error: loadFailure,
+										searched: false,
+										hint: "This is NOT a 'no matches' result — the file's components could not be loaded. Very large files can exceed the load timeout; check the Desktop Bridge plugin and retry, or look up a known node directly with figma_get_component_details / figma_get_component. To search a published library instead, pass libraryFileKey.",
+									}),
 								},
 							],
 							isError: true,
@@ -3022,12 +3083,37 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 		// so local mode and cloud mode share the same 30 implementations — no risk of drift.
 		registerWriteTools(this.server, () => this.getDesktopConnector());
 
+		// Register cross-file tools (figma_execute_across_files) — run the same
+		// code against every (or a chosen subset of) currently connected files
+		// concurrently. Local mode only, needs direct wsServer access for
+		// getConnectedFiles(), so it isn't part of the connector abstraction.
+		registerMultiFileTools(
+			this.server,
+			() => this.wsServer,
+			() => this.getDesktopConnector(),
+		);
+
 		// Register token sync tools — figma_export_tokens and figma_import_tokens.
 		// Replace Style Dictionary and Tokens Studio's export pipeline for the
 		// popular styling methods (DTCG canonical — legacy + 2025.10 dialects —
 		// plus CSS/Tailwind/SCSS/TS/JSON/Style Dictionary/Tokens Studio, all
 		// derived from a single internal token model).
-		registerTokensTools(this.server, () => this.getDesktopConnector());
+		registerTokensTools(this.server, () => this.getDesktopConnector(), {
+			// Lets figma_export_tokens report WHICH connected file it read from —
+			// the bridge reads the active file, which may not be the intended one.
+			resolveFileName: (fileKey) =>
+				this.wsServer
+					?.getConnectedFiles()
+					.find((f) => f.fileKey === fileKey)?.fileName ?? null,
+		});
+
+		// Register design system extraction tools (figma_ds_*) — scan a
+		// production codebase, mine its de-facto styling into DTCG tokens, and
+		// scaffold a design-system/ package with Storybook. Local mode only:
+		// these read/write the local filesystem, which Cloudflare Workers
+		// cannot (registerMultiFileTools precedent — never registered in
+		// src/index.ts, so no Cloud Mode silent no-op is possible).
+		registerDesignSystemExtractionTools(this.server);
 
 		// Register Figma API tools (Tools 8-11)
 		registerFigmaAPITools(
@@ -3158,6 +3244,11 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 			() => this.getDesktopConnector(),
 		);
 
+		registerSlotTools(
+			this.server,
+			() => this.getDesktopConnector(),
+		);
+
 		// MCP Apps - gated behind ENABLE_MCP_APPS env var
 		if (process.env.ENABLE_MCP_APPS === "true") {
 			registerTokenBrowserApp(this.server, async (fileUrl?: string) => {
@@ -3283,9 +3374,16 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 				};
 			});
 
-			registerDesignSystemDashboardApp(
-				this.server,
-				async (fileUrl?: string) => {
+			logger.info("MCP Apps registered (ENABLE_MCP_APPS=true)");
+		}
+
+		// Design-system audit data fetch — shared by the always-on plain
+		// report tool below and (when ENABLE_MCP_APPS=true) the visual
+		// dashboard app.
+		const fetchDesignSystemAuditData = async (
+			fileUrl?: string,
+			forceRefresh?: boolean,
+		) => {
 					const url = fileUrl || this.getCurrentFileUrl();
 					if (!url) {
 						throw new Error(
@@ -3300,6 +3398,19 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 
 					const fileKey = urlInfo.branchId || urlInfo.fileKey;
 
+					// Audit fetches are heavy (full-file crawl); serve repeat calls
+					// within the TTL from cache unless the caller forces a refresh.
+					if (!forceRefresh) {
+						const cached = this.auditDataCache.get(fileKey);
+						if (
+							cached &&
+							Date.now() - cached.timestamp <
+								LocalFigmaConsoleMCP.AUDIT_CACHE_TTL_MS
+						) {
+							return cached.data;
+						}
+					}
+
 					// Track data availability for transparent scoring
 					let variablesAvailable = false;
 					let variableError: string | undefined;
@@ -3313,8 +3424,14 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 					let variables: any[] = [];
 					let collections: any[] = [];
 
-					// 1. Check cache first
-					const cacheEntry = this.variablesCache.get(fileKey);
+					// 1. Check cache first — unless the caller forced a refresh.
+					// forceRefresh must bypass BOTH the audit cache and this
+					// variables cache: during v1.37.0 verification, a stale
+					// variablesCache entry survived an audit forceRefresh and
+					// under-reported alias counts.
+					const cacheEntry = forceRefresh
+						? undefined
+						: this.variablesCache.get(fileKey);
 					if (cacheEntry && Date.now() - cacheEntry.timestamp < 5 * 60 * 1000) {
 						const cached = cacheEntry.data;
 						if (Array.isArray(cached.variables)) {
@@ -3411,7 +3528,15 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 						}
 					}
 
-					// Fetch file metadata, components, component sets, and styles via REST API
+					// Fetch components + component sets.
+					// Priority 1: Desktop Bridge live crawl, one page per EXECUTE_CODE
+					// command. Per-page chunking (instead of one whole-file command)
+					// keeps every plugin roundtrip small, isolates failures to a
+					// single page, and never blocks the plugin thread for minutes on
+					// large files. This scores the file as it IS. The REST
+					// published-library endpoints only reflect the last publish, so
+					// they are the fallback, and the chosen source is reported in
+					// dataAvailability.componentsSource for transparency.
 					let fileInfo:
 						| {
 								name: string;
@@ -3423,30 +3548,185 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 					let components: any[] = [];
 					let componentSets: any[] = [];
 					let styles: any[] = [];
+					let componentsSource: "bridge-live" | "rest-published" | "none" =
+						"none";
 
 					try {
+						const connector = await this.getDesktopConnector();
+						// The bridge crawls the ACTIVE file. If it reports a different
+						// fileKey than the one requested, we must NOT score it — fall
+						// through to REST rather than silently auditing the wrong file.
+						const fileCheck = await connector.executeCodeViaUI(
+							"return { fileKey: figma.fileKey || null, fileName: figma.root.name }",
+							10000,
+						);
+						const activeKey = fileCheck?.result?.fileKey;
+						const activeName = fileCheck?.result?.fileName;
+						if (activeKey && activeKey !== fileKey) {
+							logger.warn(
+								{ requested: fileKey, active: activeKey },
+								"Bridge is connected to a different file than requested — falling back to REST for component data",
+							);
+						} else if (fileCheck?.success) {
+							const pageListRes = await connector.executeCodeViaUI(
+								"await figma.loadAllPagesAsync(); return figma.root.children.map(function(p){ return p.id; })",
+								60000,
+							);
+							const pageIds: string[] = pageListRes?.result || [];
+							let failedPages = 0;
+							for (const pageId of pageIds) {
+								try {
+									const crawl = await connector.executeCodeViaUI(
+										`
+										const page = await figma.getNodeByIdAsync(${JSON.stringify(pageId)});
+										if (!page || page.type !== 'PAGE') return { sets: [], comps: [] };
+										await page.loadAsync();
+										const sets = []; const comps = [];
+										const walk = (n) => {
+											if (n.type === 'COMPONENT_SET') {
+												const propDefs = {};
+												try {
+													for (const k of Object.keys(n.variantGroupProperties || {})) {
+														propDefs[k] = { type: 'VARIANT', variantOptions: n.variantGroupProperties[k].values };
+													}
+												} catch (e) {}
+												try {
+													for (const k of Object.keys(n.componentPropertyDefinitions || {})) {
+														if (!propDefs[k]) propDefs[k] = { type: n.componentPropertyDefinitions[k].type };
+													}
+												} catch (e) {}
+												sets.push({ id: n.id, key: n.key, name: n.name, description: n.description || '', propDefs,
+													variants: n.children.filter((c) => c.type === 'COMPONENT').map((c) => ({ id: c.id, key: c.key, name: c.name, description: c.description || '' })) });
+												return;
+											}
+											if (n.type === 'COMPONENT') {
+												const propDefs = {};
+												try {
+													for (const k of Object.keys(n.componentPropertyDefinitions || {})) {
+														propDefs[k] = { type: n.componentPropertyDefinitions[k].type };
+													}
+												} catch (e) {}
+												comps.push({ id: n.id, key: n.key, name: n.name, description: n.description || '', propDefs });
+												return;
+											}
+											if ('children' in n) { for (const c of n.children) walk(c); }
+										};
+										for (const c of page.children) walk(c);
+										return { sets, comps };
+										`,
+										30000,
+									);
+									const pageData = crawl?.result;
+									if (!crawl?.success || !pageData) {
+										failedPages++;
+										continue;
+									}
+									for (const set of pageData.sets || []) {
+										componentSets.push({
+											node_id: set.id,
+											id: set.id,
+											key: set.key,
+											name: set.name,
+											description: set.description || "",
+											componentPropertyDefinitions: set.propDefs,
+										});
+										for (const variant of set.variants || []) {
+											components.push({
+												node_id: variant.id,
+												id: variant.id,
+												key: variant.key,
+												name: variant.name,
+												description: variant.description || "",
+												componentSetId: set.id,
+											});
+										}
+									}
+									for (const comp of pageData.comps || []) {
+										components.push({
+											node_id: comp.id,
+											id: comp.id,
+											key: comp.key,
+											name: comp.name,
+											description: comp.description || "",
+											componentPropertyDefinitions:
+												comp.propDefs && Object.keys(comp.propDefs).length > 0
+													? comp.propDefs
+													: undefined,
+										});
+									}
+								} catch (pageErr) {
+									failedPages++;
+									logger.warn(
+										{
+											pageId,
+											error:
+												pageErr instanceof Error
+													? pageErr.message
+													: String(pageErr),
+										},
+										"Audit crawl failed for one page — continuing with remaining pages",
+									);
+								}
+							}
+							if (failedPages > 0) {
+								logger.warn(
+									{ failedPages, totalPages: pageIds.length },
+									"Audit crawl completed with partial page coverage",
+								);
+							}
+							if (components.length > 0 || componentSets.length > 0) {
+								componentsSource = "bridge-live";
+								if (activeName) {
+									fileInfo = { name: activeName, lastModified: "" };
+								}
+							}
+						}
+					} catch (bridgeErr) {
+						logger.warn(
+							{
+								error:
+									bridgeErr instanceof Error
+										? bridgeErr.message
+										: String(bridgeErr),
+							},
+							"Desktop Bridge component crawl failed for audit, trying REST API",
+						);
+					}
+
+					// REST: file metadata + styles always; components only as fallback.
+					try {
 						const api = await this.getFigmaAPI();
+						const needComponents = componentsSource !== "bridge-live";
 						const [fileData, compResult, compSetResult, styleResult] =
 							await Promise.all([
 								api.getFile(fileKey, { depth: 0 }).catch(() => null),
-								api
-									.getComponents(fileKey)
-									.catch(() => ({ meta: { components: [] } })),
-								api
-									.getComponentSets(fileKey)
-									.catch(() => ({ meta: { component_sets: [] } })),
+								needComponents
+									? api
+											.getComponents(fileKey)
+											.catch(() => ({ meta: { components: [] } }))
+									: Promise.resolve(null),
+								needComponents
+									? api
+											.getComponentSets(fileKey)
+											.catch(() => ({ meta: { component_sets: [] } }))
+									: Promise.resolve(null),
 								api.getStyles(fileKey).catch(() => ({ meta: { styles: [] } })),
 							]);
 						if (fileData) {
 							fileInfo = {
-								name: fileData.name || "Unknown",
+								name: fileData.name || fileInfo?.name || "Unknown",
 								lastModified: fileData.lastModified || "",
 								version: fileData.version,
 								thumbnailUrl: fileData.thumbnailUrl,
 							};
 						}
-						components = compResult?.meta?.components || [];
-						componentSets = compSetResult?.meta?.component_sets || [];
+						if (needComponents) {
+							components = compResult?.meta?.components || [];
+							componentSets = compSetResult?.meta?.component_sets || [];
+							if (components.length > 0 || componentSets.length > 0) {
+								componentsSource = "rest-published";
+							}
+						}
 						styles = styleResult?.meta?.styles || [];
 					} catch (apiErr) {
 						logger.warn(
@@ -3482,7 +3762,7 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 						}
 					}
 
-					return {
+					const auditData = {
 						variables,
 						collections,
 						components,
@@ -3495,14 +3775,32 @@ Without libraryFileKey/libraryFileUrl, searches the currently open file (local c
 							components: components.length > 0,
 							styles: styles.length > 0,
 							variableError,
+							componentsSource,
 						},
 					};
-				},
+					this.auditDataCache.set(fileKey, {
+						data: auditData,
+						timestamp: Date.now(),
+					});
+					return auditData;
+		};
+
+		// Always available — any MCP client can run the audit, no MCP Apps
+		// support required.
+		registerDesignSystemAuditTool(
+			this.server,
+			fetchDesignSystemAuditData,
+			() => this.getCurrentFileUrl(),
+		);
+
+		// Visual dashboard app (MCP-Apps-capable hosts only).
+		if (process.env.ENABLE_MCP_APPS === "true") {
+			registerDesignSystemDashboardApp(
+				this.server,
+				fetchDesignSystemAuditData,
 				// Pass getCurrentUrl so dashboard can track which file was audited
 				() => this.getCurrentFileUrl(),
 			);
-
-			logger.info("MCP Apps registered (ENABLE_MCP_APPS=true)");
 		}
 
 		logger.info(
