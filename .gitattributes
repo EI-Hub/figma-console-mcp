@@ -1,0 +1,21 @@
+# Line endings are fixed by the repository, not by each clone's core.autocrlf.
+#
+# Why: `npm pack` ships the working-tree bytes. On a Windows clone with core.autocrlf=true the
+# text files check out as CRLF, and the tarball of the same tag gets a different sha1 and
+# integrity (ei/v1.40.4: 5f6e1cf6... instead of f6786d2f...) with no functional change - which
+# breaks every lockfile that pins the vendored tarball. With eol=lf, any clone on any OS builds
+# the same tarball.
+#
+# text=auto keeps git's binary detection (a file it sees as binary is left untouched).
+* text=auto eol=lf
+
+# Binaries, explicit.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.tgz  binary
