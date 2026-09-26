@@ -78,7 +78,7 @@ export class FigmaConsoleMCPv3 extends McpAgent {
 	server = (() => {
 		const s = new McpServer({
 			name: "Figma Console MCP",
-			version: "1.40.4",
+			version: "1.40.5",
 		});
 		// Identity wrap — every tool's response and thrown error gets stamped
 		// with our MCP name so cross-MCP attribution is unambiguous.
