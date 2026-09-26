@@ -73,3 +73,4 @@ git tag -n1 -l ei/v1.34.0                # relire le message d'un tag
 |---|---|---|---|
 | `ei/v1.34.0` | `6082938` | v1.34.0 | 2026-09-21 |
 | `ei/v1.40.4` | `bf2c70d` | v1.40.4 | 2026-09-21 |
+| `ei/v1.40.5` | `3bc604a` | v1.40.4 (patch fork : `.gitattributes`, tarball reproductible) | 2026-09-26 |
